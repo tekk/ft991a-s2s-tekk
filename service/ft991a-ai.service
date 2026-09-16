@@ -1,0 +1,25 @@
+[Unit]
+Description=Yaesu FT-991A OpenAI Realtime S2S Bridge Appliance
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/ft991a-ai-s2s
+Environment="PATH=/home/pi/ft991a-ai-s2s/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/pi/ft991a-ai-s2s/venv/bin/python3 -m backend.app --port 80 --no-console
+Restart=always
+RestartSec=5
+# Allow binding to port 80 without root privileges
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Sandboxing & security
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/pi/ft991a-ai-s2s/data /home/pi/ft991a-ai-s2s/recordings
+
+[Install]
+WantedBy=multi-user.target
