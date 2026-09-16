@@ -66,8 +66,8 @@ Press the **MENU** button on the FT-991A and configure the following menu items:
 
 ### 1. Clone & Run Setup Script
 ```bash
-git clone https://github.com/your-repo/ft991a-ai-s2s.git
-cd ft991a-ai-s2s
+git clone https://github.com/tekk/ft991a-s2s-tekk.git
+cd ft991a-s2s-tekk
 
 # Run the automated SBC installer
 chmod +x setup_sbc.sh run.sh
