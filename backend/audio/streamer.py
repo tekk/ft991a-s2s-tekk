@@ -39,7 +39,7 @@ def resample_pcm16(
             audio_data = audio_data.reshape(-1, from_channels)
             # Mixdown to mono if needed
             if to_channels == 1:
-                audio_data = np.mean(audio_data, axis=1)
+                audio_data = np.mean(audio_data, axis=1).astype(np.int16)
 
         if from_rate != to_rate:
             # Use polyphase rational resampling for low latency & high fidelity

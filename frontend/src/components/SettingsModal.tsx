@@ -64,11 +64,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       }
 
       if (portsRes.ok) {
-        setPorts(await portsRes.json());
+        const p = await portsRes.json();
+        if (Array.isArray(p)) setPorts(p);
       }
 
       if (devRes.ok) {
-        setAudioDevices(await devRes.json());
+        const d = await devRes.json();
+        if (d && Array.isArray(d.inputs) && Array.isArray(d.outputs)) {
+          setAudioDevices(d);
+        }
       }
     } catch (e) {
       console.error(e);
