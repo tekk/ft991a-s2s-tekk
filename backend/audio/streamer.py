@@ -75,8 +75,10 @@ class AudioStreamer:
         # Callbacks
         self.on_rx_chunk: Optional[Callable[[bytes], None]] = None
 
-        # Playback buffer queue
+        # Playback buffer queue and byte buffer
         self.tx_queue: queue.Queue = queue.Queue()
+        self._output_buffer = bytearray()
+        self.playback_gate = True  # Default un-gated for standalone audio streaming
         self.playback_thread: Optional[threading.Thread] = None
         self._stop_playback_event = threading.Event()
 
@@ -167,32 +169,49 @@ class AudioStreamer:
 
     def _output_callback(self, outdata, frames, time_info, status):
         """Called by PortAudio when speaker needs audio data."""
-        try:
-            chunk = self.tx_queue.get_nowait()
-            rms, peak = calculate_audio_levels(chunk)
-            self.tx_rms = rms
-            self.tx_peak = peak
-            out_samples = np.frombuffer(chunk, dtype=np.int16)
-
-            # Pad or truncate if chunk size differs from expected frames
-            if len(out_samples) < frames:
-                outdata[:len(out_samples), 0] = out_samples
-                outdata[len(out_samples):, 0] = 0
-            else:
-                outdata[:, 0] = out_samples[:frames]
-        except queue.Empty:
+        if not self.playback_gate:
             outdata.fill(0)
             self.tx_rms = 0.0
             self.tx_peak = 0.0
-            if self.is_playing:
-                self.is_playing = False
+            return
+
+        needed_bytes = frames * 2  # 1 channel 16-bit
+        while len(self._output_buffer) < needed_bytes:
+            try:
+                chunk = self.tx_queue.get_nowait()
+                self._output_buffer.extend(chunk)
+            except queue.Empty:
+                break
+
+        if len(self._output_buffer) >= needed_bytes:
+            chunk = bytes(self._output_buffer[:needed_bytes])
+            del self._output_buffer[:needed_bytes]
+            rms, peak = calculate_audio_levels(chunk)
+            self.tx_rms = rms
+            self.tx_peak = peak
+            outdata[:, 0] = np.frombuffer(chunk, dtype=np.int16)
+            self.is_playing = True
+        elif len(self._output_buffer) > 0:
+            chunk = bytes(self._output_buffer)
+            self._output_buffer.clear()
+            rms, peak = calculate_audio_levels(chunk)
+            self.tx_rms = rms
+            self.tx_peak = peak
+            samples = np.frombuffer(chunk, dtype=np.int16)
+            outdata[:len(samples), 0] = samples
+            outdata[len(samples):, 0] = 0
+            self.is_playing = True
+        else:
+            outdata.fill(0)
+            self.tx_rms = 0.0
+            self.tx_peak = 0.0
+            self.is_playing = False
 
     def enqueue_tx_audio(self, pcm24k_bytes: bytes):
         """Accepts 24kHz PCM16 audio from OpenAI and feeds the playback pipeline."""
         if not pcm24k_bytes:
             return
 
-        self.is_playing = True
         # Resample from 24kHz to hardware output rate
         hw_pcm = resample_pcm16(
             pcm_bytes=pcm24k_bytes,
@@ -208,9 +227,24 @@ class AudioStreamer:
             chunk = hw_pcm[i:i + block_bytes]
             self.tx_queue.put(chunk)
 
+    def start_playback(self):
+        """Allow staged audio to flow to the transmitter after pre-TX relay settle."""
+        self.playback_gate = True
+
+    def stop_playback(self):
+        """Gate playback and reset staging buffers."""
+        self.playback_gate = False
+        self.is_playing = False
+        self._output_buffer.clear()
+        while not self.tx_queue.empty():
+            try:
+                self.tx_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def is_playback_finished(self) -> bool:
         """Returns True if the output playback buffer has been fully drained."""
-        return self.tx_queue.empty() and not self.is_playing
+        return self.tx_queue.empty() and len(self._output_buffer) == 0 and not self.is_playing
 
     def set_capturing(self, capturing: bool):
         """Control whether captured audio is fed into OpenAI."""
@@ -255,16 +289,20 @@ class AudioStreamer:
                     self.rx_peak = max(0.0, self.rx_peak - 5.0)
 
                 # Process playback queue in simulation
-                try:
-                    chunk = self.tx_queue.get_nowait()
-                    rms, peak = calculate_audio_levels(chunk)
-                    self.tx_rms = rms
-                    self.tx_peak = peak
-                    self.is_playing = True
-                except queue.Empty:
+                if self.playback_gate:
+                    try:
+                        chunk = self.tx_queue.get_nowait()
+                        rms, peak = calculate_audio_levels(chunk)
+                        self.tx_rms = rms
+                        self.tx_peak = peak
+                        self.is_playing = True
+                    except queue.Empty:
+                        self.tx_rms = 0.0
+                        self.tx_peak = 0.0
+                        self.is_playing = False
+                else:
                     self.tx_rms = 0.0
                     self.tx_peak = 0.0
-                    self.is_playing = False
 
                 time.sleep(0.05)
 

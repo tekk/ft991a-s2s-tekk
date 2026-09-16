@@ -8,7 +8,7 @@ describe('TransmissionLog Component', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders live in-progress transcripts', () => {
+  it('renders live in-progress transcripts', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => [],
@@ -24,6 +24,7 @@ describe('TransmissionLog Component', () => {
 
     expect(screen.getByText('CQ CQ this is OM7TEK calling on 20 meters')).toBeInTheDocument();
     expect(screen.getByText('OM7TEK this is AI7HAM roger your signal 59, 73')).toBeInTheDocument();
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
   });
 
   it('renders recorded transmissions with audio players', async () => {

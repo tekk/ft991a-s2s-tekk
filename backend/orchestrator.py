@@ -38,6 +38,9 @@ class TransceiverOrchestrator:
 
         # State machine tracking
         self.signal_drop_time = 0.0
+        self.rx_start_time = 0.0
+        self.ai_response_in_progress = False
+        self.last_openai_reconnect_check = 0.0
         self.rx_buffer = bytearray()
         self.tx_buffer = bytearray()
         self.manual_ptt_override = False
@@ -78,10 +81,15 @@ class TransceiverOrchestrator:
         def on_user_transcript(text: str):
             self.latest_user_transcript = text
 
+        def on_response_done():
+            logger.info("OpenAI response audio generation completed.")
+            self.ai_response_in_progress = False
+
         self.openai_client.on_audio_delta = on_ai_audio
         self.openai_client.on_assistant_transcript_delta = on_ai_transcript_delta
         self.openai_client.on_assistant_transcript_done = on_ai_transcript_done
         self.openai_client.on_user_transcript = on_user_transcript
+        self.openai_client.on_response_done = on_response_done
 
     async def start(self):
         """Initialize radio, audio streams, OpenAI client, and background tasks."""
@@ -99,6 +107,7 @@ class TransceiverOrchestrator:
 
         # Start Audio Streams
         self.streamer.start(on_rx_chunk=self.streamer_rx_cb)
+        self.streamer.stop_playback()
 
         # Connect to OpenAI Realtime
         if cfg.openai_api_key:
@@ -124,6 +133,7 @@ class TransceiverOrchestrator:
 
         self.streamer.stop()
         self.streamer.start(on_rx_chunk=self.streamer_rx_cb)
+        self.streamer.stop_playback()
 
         if cfg.openai_api_key and not self.openai_client.is_connected:
             await self.openai_client.connect()
@@ -142,13 +152,22 @@ class TransceiverOrchestrator:
 
                 # State: IDLE -> Watching for incoming signal
                 if self.state == "IDLE":
+                    # Periodic OpenAI health check & auto-reconnect
+                    if (now - self.last_openai_reconnect_check) > 10.0:
+                        self.last_openai_reconnect_check = now
+                        if cfg.openai_api_key and not self.openai_client.is_connected:
+                            logger.info("Attempting auto-reconnect to OpenAI Realtime...")
+                            asyncio.create_task(self.openai_client.connect())
+
                     if signal_present or self.manual_ptt_override:
                         logger.info(f"Signal detected! S-Meter={s_meter} (Threshold={threshold}). Starting RX...")
                         self.state = "RX"
+                        self.rx_start_time = now
                         self.rx_buffer.clear()
                         self.tx_buffer.clear()
                         self.latest_user_transcript = ""
                         self.latest_ai_transcript = ""
+                        self.streamer.stop_playback()
                         self.streamer.set_capturing(True)
                         self.signal_drop_time = 0.0
 
@@ -160,31 +179,42 @@ class TransceiverOrchestrator:
                         if self.signal_drop_time == 0.0:
                             self.signal_drop_time = now
                         elif (now - self.signal_drop_time) >= (cfg.rx_hang_time_ms / 1000.0):
-                            logger.info("Signal dropped below threshold and hang-time elapsed. Finishing RX...")
-                            self.state = "PROCESSING"
+                            rx_duration = now - self.rx_start_time - (cfg.rx_hang_time_ms / 1000.0)
                             self.streamer.set_capturing(False)
 
-                            # Save RX recording asynchronously
-                            rx_data = bytes(self.rx_buffer)
-                            asyncio.create_task(self._finalize_rx(rx_data))
+                            # Filter transient static pops (< 300ms or < 4800 bytes)
+                            if rx_duration < 0.3 or len(self.rx_buffer) < 4800:
+                                logger.info(f"Signal burst too short ({rx_duration:.2f}s). Discarding transient noise.")
+                                self.state = "IDLE"
+                            else:
+                                logger.info(f"Valid transmission received ({rx_duration:.2f}s). Processing AI response...")
+                                self.state = "PROCESSING"
+                                self.streamer.stop_playback()
+                                self.ai_response_in_progress = True
 
-                            # Commit and trigger AI turn
-                            await self.openai_client.commit_and_generate()
+                                # Save RX recording asynchronously
+                                rx_data = bytes(self.rx_buffer)
+                                asyncio.create_task(self._finalize_rx(rx_data))
+
+                                # Commit and trigger AI turn
+                                await self.openai_client.commit_and_generate()
 
                 # State: TX_PREPARE -> Audio ready from AI, engage PTT and wait pre-TX relay settle
                 elif self.state == "TX_PREPARE":
                     logger.info("Keying PTT for AI transmission...")
                     self.radio.set_ptt(True)
                     await asyncio.sleep(cfg.pre_tx_delay_ms / 1000.0)
+                    self.streamer.start_playback()  # Un-gate audio after relays have settled
                     self.state = "TX"
 
                 # State: TX -> Transmitting AI response audio to radio
                 elif self.state == "TX":
-                    # Check if audio output buffer is drained
-                    if self.streamer.is_playback_finished():
+                    # Check if OpenAI is finished generating AND output audio buffer has fully drained
+                    if not self.ai_response_in_progress and self.streamer.is_playback_finished():
                         logger.info("AI audio output complete. Releasing PTT...")
                         await asyncio.sleep(cfg.post_tx_delay_ms / 1000.0)
                         self.radio.set_ptt(False)
+                        self.streamer.stop_playback()
 
                         # Save TX recording asynchronously
                         tx_data = bytes(self.tx_buffer)

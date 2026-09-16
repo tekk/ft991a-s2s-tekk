@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, ArrowDownLeft, ArrowUpRight, Download, RefreshCw } from 'lucide-react';
 
 interface RecordingEntry {
@@ -23,26 +23,31 @@ export const TransmissionLog: React.FC<TransmissionLogProps> = ({
 }) => {
   const [recordings, setRecordings] = useState<RecordingEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const isMounted = useRef(true);
 
   const fetchRecordings = async () => {
     try {
-      setLoading(true);
+      if (isMounted.current) setLoading(true);
       const res = await fetch('/api/recordings');
-      if (res.ok) {
+      if (res.ok && isMounted.current) {
         const data = await res.json();
-        setRecordings(data);
+        if (isMounted.current) setRecordings(data);
       }
     } catch (e) {
       // Ignore network error
     } finally {
-      setLoading(false);
+      if (isMounted.current) setLoading(false);
     }
   };
 
   useEffect(() => {
+    isMounted.current = true;
     fetchRecordings();
     const interval = setInterval(fetchRecordings, 4000);
-    return () => clearInterval(interval);
+    return () => {
+      isMounted.current = false;
+      clearInterval(interval);
+    };
   }, []);
 
   return (
