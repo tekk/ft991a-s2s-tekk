@@ -153,9 +153,10 @@ if FRONTEND_DIST.exists():
 # --- Application Startup & CLI Runner ---
 
 async def main():
+    cfg = config_manager.get()
     parser = argparse.ArgumentParser(description="Yaesu FT-991A OpenAI Realtime S2S Transceiver Bridge")
-    parser.add_argument("--port", "-p", type=int, default=80, help="Target Web UI port (default: 80)")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host binding (default: 0.0.0.0)")
+    parser.add_argument("--port", "-p", type=int, default=cfg.port, help=f"Target Web UI port (default: {cfg.port})")
+    parser.add_argument("--host", type=str, default=cfg.host, help=f"Host binding (default: {cfg.host})")
     parser.add_argument("--mock", action="store_true", help="Run with simulated radio hardware")
     parser.add_argument("--no-console", action="store_true", help="Disable Rich terminal dashboard")
     args = parser.parse_args()

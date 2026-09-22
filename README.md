@@ -143,11 +143,62 @@ journalctl -u ft991a-ai.service -f
 
 ---
 
+---
+
+## Docker & Docker Compose Deployment
+
+The project includes a multi-stage `Dockerfile` and `docker-compose.yml` optimized for Linux SBCs (Raspberry Pi 5, Orange Pi, Radxa) as well as x86_64 Linux servers.
+
+### 1. Quick Launch with Docker Compose
+```bash
+# Clone the repository
+git clone https://github.com/tekk/ft991a-s2s-tekk.git
+cd ft991a-s2s-tekk
+
+# Configure your environment variables (.env)
+cp .env.example .env
+nano .env
+
+# Build and start container in background
+docker compose up -d --build
+
+# View container logs
+docker compose logs -f
+```
+
+### 2. USB Connection Feasibility & Best Practices
+
+#### Linux (Raspberry Pi, Armbian, Ubuntu, Debian) — **Fully Supported & Recommended**
+- **USB Serial (CAT)**: The FT-991A uses a Silicon Labs CP2105 dual UART controller providing `/dev/ttyUSB0` and `/dev/ttyUSB1`.
+- **USB Audio (ALSA)**: The FT-991A internal Texas Instruments PCM2903 soundcard exposes ALSA device nodes at `/dev/snd/*`.
+- **Hot-Plug Survival**: By default, `docker-compose.yml` specifies `privileged: true` and mounts `/dev:/dev` and `/dev/snd:/dev/snd`. This is the recommended setup on Linux SBCs because it ensures that if the radio is power-cycled or the USB cable is unplugged/replugged, the new device nodes are immediately accessible inside the running container without requiring a container restart.
+- **Granular Device Mapping Alternative**: If `privileged: true` is restricted in your environment, you can use static device mappings in `docker-compose.yml`:
+  ```yaml
+  devices:
+    - "/dev/ttyUSB0:/dev/ttyUSB0"
+    - "/dev/ttyUSB1:/dev/ttyUSB1"
+    - "/dev/snd:/dev/snd"
+  ```
+  *(Note: With static device mappings, restarting the container is required if the USB cable is reconnected).*
+
+#### macOS & Windows — **Suggestions & Limitations**
+- **macOS (Docker Desktop)**: **Direct USB passthrough is NOT feasible.** Docker Desktop on macOS runs within a virtualized Linux VM (HyperKit/Virtualization.framework) which does not natively pass host USB serial devices or CoreAudio into containerized ALSA devices.
+  - *Recommendation for Mac*: Run the project natively using Python venv:
+    ```bash
+    ./setup_sbc.sh && ./run.sh
+    ```
+- **Windows (Docker Desktop + WSL2)**:
+  - USB serial requires Microsoft's [`usbipd-win`](https://github.com/dorssel/usbipd-win) to attach the CP2105 device to WSL2.
+  - USB audio requires bridging host Windows audio into WSL2 (WSLg PulseAudio socket), which introduces audio latency and complex ALSA emulation.
+  - *Recommendation for Windows*: Run natively in Python on Windows or run natively on a Linux SBC connected directly to the radio.
+
+---
+
 ## Testing & Verification
 
-Run the automated test suite to verify CAT parsing, audio resampling, port fallback, disk auto-roll, and prompt security:
+Run the automated test suite (52 tests across Python backend and React Web UI):
 ```bash
-PYTHONPATH=. ./venv/bin/python3 tests/test_components.py
+./run_tests.sh
 ```
 
 ---

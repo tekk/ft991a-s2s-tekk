@@ -1,0 +1,17 @@
+.git
+.github
+node_modules
+frontend/node_modules
+venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+data/*.json
+recordings/*
+!recordings/.gitkeep
+dist
+frontend/dist
+.DS_Store

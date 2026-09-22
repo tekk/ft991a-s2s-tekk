@@ -1,0 +1,50 @@
+services:
+  ft991a-s2s:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ft991a-s2s
+    restart: unless-stopped
+
+    # Host networking allows the appliance to bind port 80 directly,
+    # auto-detect host LAN IP addresses, and minimize audio packet latency.
+    # Note: On macOS/Windows Docker Desktop, change this to port mapping:
+    # ports:
+    #   - "80:80"
+    network_mode: "host"
+
+    # ==========================================================================
+    # USB HARDWARE PASSTHROUGH (YAESU FT-991A CAT & USB AUDIO)
+    # ==========================================================================
+    # privileged: true is strongly recommended for Linux SBCs (Raspberry Pi,
+    # Orange Pi, Radxa) to ensure that if the FT-991A is power-cycled or the USB
+    # cable is replugged, newly created /dev/ttyUSB* and /dev/snd/* device nodes
+    # remain accessible without restarting Docker.
+    privileged: true
+
+    # Direct device passthrough alternatives (if privileged mode is restricted):
+    # devices:
+    #   - "/dev/ttyUSB0:/dev/ttyUSB0"   # FT-991A Standard/Enhanced COM Port
+    #   - "/dev/ttyUSB1:/dev/ttyUSB1"   # FT-991A Secondary Port
+    #   - "/dev/snd:/dev/snd"           # FT-991A USB Audio CODEC (ALSA)
+
+    volumes:
+      # Persistent application settings (config.json)
+      - ./data:/app/data
+      # Audio recordings archive (OPUS/MP3/OGG/M4A)
+      - ./recordings:/app/recordings
+      # Host dev filesystem for dynamic USB hot-plugging
+      - /dev:/dev
+      # ALSA soundcard subsystems
+      - /dev/snd:/dev/snd
+
+    # Load environment variables (.env file)
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Override any .env settings here if needed:
+      # - PORT=80
+      # - SIMULATED_MODE=false
