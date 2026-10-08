@@ -65,10 +65,26 @@ async def list_ports():
     return FT991ARadio.list_serial_ports()
 
 
+@app.post("/api/auto-detect-port")
+async def trigger_auto_detect_port():
+    """Auto-detect and probe Yaesu FT-991A CAT serial port."""
+    from backend.cat.auto_detect import auto_detect_serial_port
+    port = auto_detect_serial_port(probe=True)
+    return {"status": "ok", "detected_port": port}
+
+
 @app.get("/api/devices")
 async def list_audio_devices():
     """List host audio input and output devices."""
     return get_audio_devices()
+
+
+@app.post("/api/auto-detect-audio")
+async def trigger_auto_detect_audio():
+    """Auto-detect Yaesu FT-991A USB Audio Codec devices."""
+    from backend.audio.devices import auto_detect_audio_devices
+    devs = auto_detect_audio_devices()
+    return {"status": "ok", "detected_devices": devs}
 
 
 @app.get("/api/storage")
@@ -105,12 +121,120 @@ async def set_manual_ptt(payload: Dict[str, bool]):
     return {"status": "ok", "ptt_active": active}
 
 
+# --- Pipecat Skills, Prompts, and Providers Endpoints ---
+
+@app.get("/api/skills")
+async def get_skills():
+    """List all registered Pipecat skills and function calling schemas."""
+    from backend.pipecat_bridge.skills import skill_manager
+    return skill_manager.list_skills()
+
+
+@app.post("/api/skills")
+async def save_skill(skill_def: Dict[str, Any]):
+    """Create or update a custom Pipecat agent skill."""
+    from backend.pipecat_bridge.skills import skill_manager
+    success = skill_manager.register_skill(skill_def)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to register skill definition")
+    return {"status": "ok", "skill": skill_def}
+
+
+@app.delete("/api/skills/{skill_name}")
+async def delete_skill(skill_name: str):
+    """Delete a custom skill."""
+    from backend.pipecat_bridge.skills import skill_manager
+    success = skill_manager.delete_skill(skill_name)
+    if not success:
+        raise HTTPException(status_code=404, detail="Skill not found or built-in skills cannot be deleted")
+    return {"status": "ok", "deleted": skill_name}
+
+
+@app.post("/api/skills/{skill_name}/test")
+async def test_skill_execution(skill_name: str, payload: Dict[str, Any] = {}):
+    """Test execution of a Pipecat skill."""
+    from backend.pipecat_bridge.skills import skill_manager
+    result = await skill_manager.execute_skill(skill_name, **payload)
+    return {"status": "ok", "skill": skill_name, "result": result}
+
+
+@app.get("/api/system-prompt")
+async def get_system_prompt():
+    """Get active system prompt and ham radio template."""
+    from backend.openai_client.prompts import HAM_SYSTEM_PROMPT
+    cfg = config_manager.get()
+    default_prompt = HAM_SYSTEM_PROMPT.format(callsign=cfg.callsign)
+    active = cfg.custom_system_prompt if cfg.custom_system_prompt else default_prompt
+    return {
+        "system_prompt": active,
+        "is_custom": bool(cfg.custom_system_prompt),
+        "default_prompt": default_prompt,
+    }
+
+
+@app.post("/api/system-prompt")
+async def update_system_prompt(payload: Dict[str, str]):
+    """Update custom system prompt for the AI agent."""
+    prompt = payload.get("system_prompt", "")
+    config_manager.save({"custom_system_prompt": prompt})
+    return {"status": "ok", "custom_system_prompt": prompt}
+
+
+@app.get("/api/providers")
+async def get_providers():
+    """Get status of STT, LLM, and TTS providers and configured API keys."""
+    cfg = config_manager.get()
+    return {
+        "pipeline_mode": cfg.pipeline_mode,
+        "active": {
+            "stt": cfg.stt_provider,
+            "llm": cfg.llm_provider,
+            "tts": cfg.tts_provider,
+        },
+        "models": {
+            "openai": cfg.openai_model,
+            "groq": cfg.groq_model,
+            "anthropic": cfg.anthropic_model,
+            "google": cfg.google_model,
+            "ollama": cfg.ollama_model,
+            "cartesia_voice": cfg.cartesia_voice_id,
+            "elevenlabs_voice": cfg.elevenlabs_voice_id,
+        },
+        "languages": {
+            "stt": cfg.stt_language,
+            "tts": cfg.tts_language,
+        },
+        "keys_configured": {
+            "openai": bool(cfg.openai_api_key),
+            "deepgram": bool(cfg.deepgram_api_key),
+            "cartesia": bool(cfg.cartesia_api_key),
+            "elevenlabs": bool(cfg.elevenlabs_api_key),
+            "groq": bool(cfg.groq_api_key),
+            "anthropic": bool(cfg.anthropic_api_key),
+            "google": bool(cfg.google_api_key),
+        },
+        "available": {
+            "stt": ["deepgram", "openai", "whisper_local", "mock"],
+            "llm": ["openai", "groq", "anthropic", "google", "ollama", "mock"],
+            "tts": ["cartesia", "elevenlabs", "openai", "mock"],
+        }
+    }
+
+
+@app.post("/api/providers")
+async def update_providers(updates: Dict[str, Any]):
+    """Update AI providers, models, languages, or API keys."""
+    cfg = config_manager.save(updates)
+    return {"status": "ok", "config": cfg.masked_dict()}
+
+
 # --- WebSocket Telemetry Hub ---
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     orchestrator.register_websocket(websocket)
+
     try:
         while True:
             data = await websocket.receive_json()
@@ -159,10 +283,22 @@ async def main():
     parser.add_argument("--host", type=str, default=cfg.host, help=f"Host binding (default: {cfg.host})")
     parser.add_argument("--mock", action="store_true", help="Run with simulated radio hardware")
     parser.add_argument("--no-console", action="store_true", help="Disable Rich terminal dashboard")
+    parser.add_argument("--tui", action="store_true", help="Launch interactive Textual Terminal User Interface")
+    parser.add_argument("--gui", action="store_true", help="Launch CustomTkinter multiplatform Desktop GUI")
     args = parser.parse_args()
 
     if args.mock:
         config_manager.save({"simulated_mode": True})
+
+    if args.tui:
+        from backend.tui.app import run_tui
+        run_tui()
+        return
+
+    if args.gui:
+        from backend.desktop_gui.app import run_desktop_gui
+        run_desktop_gui()
+        return
 
     # 1. Resolve Port with >10000 Fallback
     target_port, was_fallback = resolve_web_port(preferred_port=args.port, host=args.host)

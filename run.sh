@@ -5,6 +5,8 @@
 #   ./run.sh                  (Defaults to port 80 with >10000 fallback)
 #   ./run.sh --port 8080      (Specific port)
 #   ./run.sh --mock           (Hardware simulation mode without physical radio)
+#   ./run.sh --tui            (Launch interactive Textual Terminal User Interface)
+#   ./run.sh --gui            (Launch CustomTkinter multiplatform Desktop GUI)
 # ==============================================================================
 
 set -e

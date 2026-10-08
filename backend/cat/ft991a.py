@@ -111,6 +111,14 @@ class FT991ARadio(BaseRadio):
 
             port = cfg.serial_port
             baud = cfg.baud_rate
+
+            # Auto-detection check
+            if cfg.auto_serial_port:
+                from backend.cat.auto_detect import auto_detect_serial_port
+                detected = auto_detect_serial_port(probe=False)
+                if detected:
+                    port = detected
+
             logger.info(f"Connecting to Yaesu FT-991A on {port} @ {baud} baud (8N2)...")
 
             try:
@@ -135,7 +143,30 @@ class FT991ARadio(BaseRadio):
                     logger.info(f"Transceiver response to ID;: {resp.strip()}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to connect to CAT port {port}: {e}")
+                logger.warning(f"Connection to CAT port {port} failed: {e}")
+                # If auto_serial_port enabled, try active probing across all candidates
+                if cfg.auto_serial_port:
+                    from backend.cat.auto_detect import auto_detect_serial_port
+                    probed_port = auto_detect_serial_port(probe=True)
+                    if probed_port and probed_port != port:
+                        logger.info(f"Retrying connection with probed port: {probed_port}")
+                        try:
+                            self.serial_conn = serial.Serial(
+                                port=probed_port,
+                                baudrate=baud,
+                                bytesize=serial.EIGHTBITS,
+                                parity=serial.PARITY_NONE,
+                                stopbits=serial.STOPBITS_TWO,
+                                timeout=0.15,
+                                write_timeout=0.2,
+                            )
+                            self.serial_conn.reset_input_buffer()
+                            self.serial_conn.reset_output_buffer()
+                            logger.info(f"Successfully opened probed CAT port {probed_port}")
+                            return True
+                        except Exception as e2:
+                            logger.error(f"Failed to connect to probed CAT port {probed_port}: {e2}")
+
                 self.serial_conn = None
                 return False
 

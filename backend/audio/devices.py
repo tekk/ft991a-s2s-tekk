@@ -71,3 +71,39 @@ def resolve_device_index(device_param: Optional[Any], is_input: bool = True) -> 
             return d["id"]
 
     return None
+
+
+def auto_detect_audio_devices() -> Dict[str, Optional[int]]:
+    """
+    Auto-detect input and output audio devices for Yaesu FT-991A (USB Audio CODEC).
+    Saves preference to config_manager if found.
+    """
+    devs = get_audio_devices()
+    input_id = None
+    output_id = None
+
+    for d in devs.get("inputs", []):
+        if d.get("recommended"):
+            input_id = d["id"]
+            break
+
+    for d in devs.get("outputs", []):
+        if d.get("recommended"):
+            output_id = d["id"]
+            break
+
+    updates = {}
+    if input_id is not None:
+        updates["audio_input_device"] = str(input_id)
+        updates["preferred_audio_input"] = str(input_id)
+    if output_id is not None:
+        updates["audio_output_device"] = str(output_id)
+        updates["preferred_audio_output"] = str(output_id)
+
+    if updates:
+        from backend.config import config_manager
+        config_manager.save(updates)
+        logger.info(f"Auto-detected FT-991A audio devices: in={input_id}, out={output_id}")
+
+    return {"input_id": input_id, "output_id": output_id}
+
