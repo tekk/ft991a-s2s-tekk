@@ -42,7 +42,12 @@ class SecurityGuardrailProcessor(FrameProcessor):
         if isinstance(frame, (TranscriptionFrame, TextFrame)) and direction == FrameDirection.DOWNSTREAM:
             text = frame.text if hasattr(frame, "text") else ""
             if text:
-                is_safe, reason, refusal = security_guardrail.inspect_input(text, callsign=callsign)
+                is_safe, reason, refusal = security_guardrail.inspect_input(
+                    text,
+                    callsign=callsign,
+                    language=cfg.language,
+                    regulatory_jurisdiction=cfg.regulatory_jurisdiction,
+                )
                 if not is_safe:
                     logger.warning(f"SecurityGuardrailProcessor: Blocked '{text}' (Reason: {reason})")
                     self.blocked_turn = True
@@ -58,7 +63,13 @@ class SecurityGuardrailProcessor(FrameProcessor):
             text = frame.text if hasattr(frame, "text") else ""
             if text:
                 max_sentences = 2 if cfg.agent_brevity_level == "strict" else 3
-                is_valid, sanitized = security_guardrail.sanitize_output(text, callsign=callsign, max_sentences=max_sentences)
+                is_valid, sanitized = security_guardrail.sanitize_output(
+                    text,
+                    callsign=callsign,
+                    max_sentences=max_sentences,
+                    language=cfg.language,
+                    regulatory_jurisdiction=cfg.regulatory_jurisdiction,
+                )
                 if is_valid and sanitized:
                     frame.text = sanitized
 

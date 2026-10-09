@@ -24,15 +24,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [audioIn, setAudioIn] = useState('');
   const [audioOut, setAudioOut] = useState('');
   const [voice, setVoice] = useState('alloy');
+  const [language, setLanguage] = useState('en');
+  const [regulatoryJurisdiction, setRegulatoryJurisdiction] = useState('auto');
   const [simulatedMode, setSimulatedMode] = useState(false);
   const [customPrompt, setCustomPrompt] = useState('');
   const [recFormat, setRecFormat] = useState('opus');
+  const [recPreset, setRecPreset] = useState('standard');
   const [recBitrate, setRecBitrate] = useState('32k');
   const [minFreeMb, setMinFreeMb] = useState(500);
   const [rxHangTime, setRxHangTime] = useState(800);
   const [preTxDelay, setPreTxDelay] = useState(200);
   const [postTxDelay, setPostTxDelay] = useState(250);
   const [maxTxSec, setMaxTxSec] = useState(30);
+  const [vhfOffset, setVhfOffset] = useState(-0.6);
+  const [uhfOffset, setUhfOffset] = useState(-7.6);
+  const [repeaterOffsetEnabled, setRepeaterOffsetEnabled] = useState(false);
 
   const loadData = async () => {
     try {
@@ -52,15 +58,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         setAudioIn(c.audio_input_device || '');
         setAudioOut(c.audio_output_device || '');
         setVoice(c.voice || 'alloy');
+        setLanguage(c.language || c.stt_language || 'en');
+        setRegulatoryJurisdiction(c.regulatory_jurisdiction || 'auto');
         setSimulatedMode(!!c.simulated_mode);
         setCustomPrompt(c.system_prompt_custom || '');
         setRecFormat(c.recording_format || 'opus');
+        setRecPreset(c.recording_preset || 'standard');
         setRecBitrate(c.recording_bitrate || '32k');
         setMinFreeMb(c.min_free_disk_mb || 500);
         setRxHangTime(c.rx_hang_time_ms || 800);
         setPreTxDelay(c.pre_tx_delay_ms || 200);
         setPostTxDelay(c.post_tx_delay_ms || 250);
         setMaxTxSec(c.max_tx_duration_sec || 30);
+        setVhfOffset(c.vhf_offset_mhz !== undefined ? c.vhf_offset_mhz : -0.6);
+        setUhfOffset(c.uhf_offset_mhz !== undefined ? c.uhf_offset_mhz : -7.6);
+        setRepeaterOffsetEnabled(!!c.repeater_offset_enabled);
       }
 
       if (portsRes.ok) {
@@ -97,16 +109,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         audio_input_device: audioIn || null,
         audio_output_device: audioOut || null,
         voice,
+        language,
+        stt_language: language,
+        tts_language: language,
+        regulatory_jurisdiction: regulatoryJurisdiction,
         simulated_mode: simulatedMode,
         system_prompt_custom: customPrompt,
         recording_format: recFormat,
+        recording_preset: recPreset,
         recording_bitrate: recBitrate,
         min_free_disk_mb: Number(minFreeMb),
         rx_hang_time_ms: Number(rxHangTime),
         pre_tx_delay_ms: Number(preTxDelay),
         post_tx_delay_ms: Number(postTxDelay),
         max_tx_duration_sec: Number(maxTxSec),
+        vhf_offset_mhz: Number(vhfOffset),
+        uhf_offset_mhz: Number(uhfOffset),
+        repeater_offset_enabled: repeaterOffsetEnabled,
       };
+
 
       if (apiKeyInput.trim()) {
         payload.openai_api_key = apiKeyInput.trim();
@@ -314,7 +335,63 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-slate-400 block mb-1">Language (STT & TTS):</label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
+                >
+                  <option value="en">en (English)</option>
+                  <option value="sk">sk (Slovak)</option>
+                  <option value="cs">cs (Czech)</option>
+                  <option value="de">de (German)</option>
+                  <option value="es">es (Spanish)</option>
+                  <option value="fr">fr (French)</option>
+                  <option value="it">it (Italian)</option>
+                  <option value="pl">pl (Polish)</option>
+                  <option value="uk">uk (Ukrainian)</option>
+                  <option value="ru">ru (Russian)</option>
+                  <option value="ja">ja (Japanese)</option>
+                  <option value="ko">ko (Korean)</option>
+                  <option value="zh">zh (Chinese)</option>
+                  <option value="pt">pt (Portuguese)</option>
+                  <option value="nl">nl (Dutch)</option>
+                  <option value="hu">hu (Hungarian)</option>
+                  <option value="sv">sv (Swedish)</option>
+                  <option value="no">no (Norwegian)</option>
+                  <option value="da">da (Danish)</option>
+                  <option value="fi">fi (Finnish)</option>
+                  <option value="tr">tr (Turkish)</option>
+                  <option value="el">el (Greek)</option>
+                  <option value="ar">ar (Arabic)</option>
+                  <option value="hi">hi (Hindi)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1">National Regulations:</label>
+                <select
+                  value={regulatoryJurisdiction}
+                  onChange={(e) => setRegulatoryJurisdiction(e.target.value)}
+                  className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
+                >
+                  <option value="auto">Auto (Detect from callsign/lang)</option>
+                  <option value="SK">Slovakia (RÚ)</option>
+                  <option value="CZ">Czech Republic (ČTÚ)</option>
+                  <option value="DE">Germany (BNetzA)</option>
+                  <option value="US">United States (FCC Part 97)</option>
+                  <option value="UK">United Kingdom (Ofcom)</option>
+                  <option value="FR">France (ARCEP)</option>
+                  <option value="ES">Spain (CNMC)</option>
+                  <option value="IT">Italy (MIMIT)</option>
+                  <option value="PL">Poland (UKE)</option>
+                  <option value="JA">Japan (MIC / 電波法)</option>
+                  <option value="ITU">International (ITU RR Art. 25)</option>
+                </select>
+              </div>
+
               <div>
                 <label className="text-slate-400 block mb-1">AI Voice:</label>
                 <select
@@ -332,16 +409,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   <option value="verse">Verse (Dynamic, crisp)</option>
                 </select>
               </div>
+            </div>
 
+            {config.active_regulation && (
+              <div className="bg-shack-900 border border-shack-700/60 rounded p-2 text-xs text-slate-300">
+                <span className="text-shack-amber font-semibold">Active Regulation Applied:</span>{' '}
+                {config.active_regulation.country_name} —{' '}
+                <span className="text-slate-400">{config.active_regulation.statute_citation} ({config.active_regulation.authority_name})</span>
+                <span className="ml-2 text-emerald-400">ID Interval: {config.active_regulation.station_id_interval_min}m</span>
+              </div>
+            )}
+
+            <div>
+              <label className="text-slate-400 block mb-1">Custom Operator Instructions (Optional):</label>
+              <input
+                type="text"
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                placeholder="e.g. Operating on 2m simplex near Seattle..."
+                className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
+              />
+            </div>
+          </div>
+
+          {/* Repeater Offset & Frequency Settings */}
+          <div className="space-y-3">
+            <h3 className="text-cyan-400 font-bold flex items-center gap-2 border-b border-shack-800 pb-1">
+              <Radio className="w-3.5 h-3.5" /> REPEATER SHIFT & FREQUENCY OFFSETS
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className="text-slate-400 block mb-1">Custom Operator Instructions (Optional):</label>
+                <label className="text-slate-400 block mb-1">VHF Repeater Offset (MHz):</label>
                 <input
-                  type="text"
-                  value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
-                  placeholder="e.g. Operating on 2m simplex near Seattle..."
+                  type="number"
+                  step="0.025"
+                  value={vhfOffset}
+                  onChange={(e) => setVhfOffset(Number(e.target.value))}
                   className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
                 />
+                <span className="text-[10px] text-slate-500">Configurable (Default: -0.6 MHz)</span>
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1">UHF Repeater Offset (MHz):</label>
+                <input
+                  type="number"
+                  step="0.025"
+                  value={uhfOffset}
+                  onChange={(e) => setUhfOffset(Number(e.target.value))}
+                  className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
+                />
+                <span className="text-[10px] text-slate-500">Configurable (Default: -7.6 MHz)</span>
+              </div>
+
+              <div className="flex flex-col justify-center">
+                <label className="flex items-center gap-2 text-slate-300 font-bold cursor-pointer pt-3">
+                  <input
+                    type="checkbox"
+                    checked={repeaterOffsetEnabled}
+                    onChange={(e) => setRepeaterOffsetEnabled(e.target.checked)}
+                    className="accent-shack-amber rounded w-4 h-4"
+                  />
+                  <span>Enable Repeater Offset on TX</span>
+                </label>
+                <span className="text-[10px] text-slate-500">Transmits on RX freq + offset</span>
               </div>
             </div>
           </div>
@@ -352,7 +484,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               <HardDrive className="w-3.5 h-3.5" /> AUDIO ARCHIVING & SBC DRIVE RETENTION
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div>
                 <label className="text-slate-400 block mb-1">Recording Format:</label>
                 <select
@@ -362,9 +494,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 >
                   <option value="opus">OPUS (Recommended for SBCs)</option>
                   <option value="mp3">MP3 (Universal compatibility)</option>
-                  <option value="ogg">OGG (Vorbis)</option>
                   <option value="m4a">M4A (AAC)</option>
+                  <option value="ogg">OGG (Vorbis)</option>
                   <option value="wav">WAV (Uncompressed)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1">Quality Preset:</label>
+                <select
+                  value={recPreset}
+                  onChange={(e) => {
+                    const p = e.target.value;
+                    setRecPreset(p);
+                    if (p === 'eco') setRecBitrate(recFormat === 'opus' ? '16k' : '32k');
+                    else if (p === 'standard') setRecBitrate(recFormat === 'opus' ? '32k' : '64k');
+                    else if (p === 'high') setRecBitrate(recFormat === 'opus' ? '64k' : '128k');
+                    else if (p === 'studio') setRecBitrate(recFormat === 'opus' ? '128k' : '256k');
+                  }}
+                  className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
+                >
+                  <option value="eco">Eco / Low (16-32 kbps)</option>
+                  <option value="standard">Standard Speech (32-64 kbps)</option>
+                  <option value="high">High Quality (64-128 kbps)</option>
+                  <option value="studio">Studio Archival (128-256 kbps)</option>
+                  <option value="custom">Custom Bitrate</option>
                 </select>
               </div>
 
@@ -372,13 +526,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 <label className="text-slate-400 block mb-1">Bitrate:</label>
                 <select
                   value={recBitrate}
-                  onChange={(e) => setRecBitrate(e.target.value)}
+                  onChange={(e) => {
+                    setRecBitrate(e.target.value);
+                    setRecPreset('custom');
+                  }}
                   className="w-full bg-shack-950 border border-shack-700 rounded p-1.5 text-slate-200"
                 >
-                  <option value="24k">24 kbps (Ultra compact voice)</option>
+                  <option value="16k">16 kbps (Ultra compact voice)</option>
+                  <option value="24k">24 kbps (Compact voice)</option>
                   <option value="32k">32 kbps (Default, crisp speech)</option>
-                  <option value="64k">64 kbps (High quality)</option>
-                  <option value="128k">128 kbps (Studio quality)</option>
+                  <option value="64k">64 kbps (High quality voice)</option>
+                  <option value="128k">128 kbps (Near CD voice)</option>
+                  <option value="256k">256 kbps (Studio broadcast)</option>
                 </select>
               </div>
 
@@ -394,6 +553,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               </div>
             </div>
           </div>
+
 
           {/* Half-Duplex Timing & Safety */}
           <div className="space-y-3">

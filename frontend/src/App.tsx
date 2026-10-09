@@ -16,6 +16,7 @@ export const App: React.FC = () => {
     sendPtt,
     simulateRx,
     setThreshold,
+    setFrequency,
   } = useRadioSocket();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -35,7 +36,8 @@ export const App: React.FC = () => {
         
         {/* Left Column: Radio RF Telemetry, S-Meter & Audio Deck (7 cols on lg) */}
         <section className="lg:col-span-7 flex flex-col gap-4">
-          <VfoDisplay radio={telemetry.radio} />
+          <VfoDisplay radio={telemetry.radio} onSetFrequency={setFrequency} />
+
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <SMeter

@@ -99,9 +99,17 @@ class TransceiverOrchestrator:
 
         # Choose Radio Driver (Physical or Mock)
         if cfg.simulated_mode:
-            self.radio = MockRadio()
+            self.radio = MockRadio(
+                frequency_hz=cfg.current_frequency_hz,
+                mode=cfg.current_mode,
+            )
         else:
             self.radio = FT991ARadio()
+            if cfg.current_frequency_hz:
+                self.radio.set_frequency(cfg.current_frequency_hz)
+            if cfg.current_mode:
+                self.radio.set_mode(cfg.current_mode)
+
 
         self.radio.connect()
 
@@ -234,14 +242,18 @@ class TransceiverOrchestrator:
             sample_rate=OPENAI_SAMPLE_RATE,
             channels=1,
             prefix="rx",
+            transcript=self.latest_user_transcript,
         )
         if rec_info:
             log_item = {
                 "id": rec_info["filename"],
+                "filename": rec_info["filename"],
                 "type": "RX",
-                "timestamp": time.time(),
+                "timestamp": rec_info.get("timestamp", time.time()),
                 "duration": rec_info["duration_seconds"],
                 "url": rec_info["url"],
+                "format": rec_info.get("format", "opus"),
+                "size_bytes": rec_info.get("size_bytes", 0),
                 "transcript": self.latest_user_transcript,
             }
             self.transmission_log.insert(0, log_item)
@@ -255,19 +267,57 @@ class TransceiverOrchestrator:
             sample_rate=OPENAI_SAMPLE_RATE,
             channels=1,
             prefix="tx",
+            transcript=self.latest_ai_transcript,
         )
         if rec_info:
             log_item = {
                 "id": rec_info["filename"],
+                "filename": rec_info["filename"],
                 "type": "TX",
-                "timestamp": time.time(),
+                "timestamp": rec_info.get("timestamp", time.time()),
                 "duration": rec_info["duration_seconds"],
                 "url": rec_info["url"],
+                "format": rec_info.get("format", "opus"),
+                "size_bytes": rec_info.get("size_bytes", 0),
                 "transcript": self.latest_ai_transcript,
             }
             self.transmission_log.insert(0, log_item)
             if len(self.transmission_log) > 50:
                 self.transmission_log.pop()
+
+    def set_frequency(
+        self,
+        freq_hz: int,
+        mode: Optional[str] = None,
+        repeater_offset_enabled: Optional[bool] = None,
+        offset_mhz: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Tune transceiver frequency, set mode, and configure repeater offset."""
+        self.radio.set_frequency(freq_hz)
+        if mode:
+            self.radio.set_mode(mode)
+
+        cfg = config_manager.get()
+        updates: Dict[str, Any] = {"current_frequency_hz": freq_hz}
+        if mode:
+            updates["current_mode"] = mode
+        if repeater_offset_enabled is not None:
+            updates["repeater_offset_enabled"] = repeater_offset_enabled
+        if offset_mhz is not None:
+            mhz = freq_hz / 1_000_000.0
+            if 144.0 <= mhz <= 148.0:
+                updates["vhf_offset_mhz"] = offset_mhz
+            elif 430.0 <= mhz <= 450.0:
+                updates["uhf_offset_mhz"] = offset_mhz
+
+        config_manager.save(updates)
+
+        if repeater_offset_enabled is not None or offset_mhz is not None:
+            cur_offset = offset_mhz if offset_mhz is not None else getattr(self.radio, "repeater_offset_mhz", -0.6)
+            cur_enabled = repeater_offset_enabled if repeater_offset_enabled is not None else getattr(self.radio, "repeater_offset_enabled", False)
+            self.radio.set_repeater_offset(cur_offset, cur_enabled)
+
+        return self.radio.poll_telemetry()
 
     def set_manual_ptt(self, active: bool):
         """Manual PTT override from Web UI."""
@@ -278,6 +328,7 @@ class TransceiverOrchestrator:
         else:
             if self.state == "TX":
                 self.state = "IDLE"
+
 
     def trigger_simulated_rx(self, duration: float = 4.0):
         """Trigger simulated incoming signal on mock radio."""

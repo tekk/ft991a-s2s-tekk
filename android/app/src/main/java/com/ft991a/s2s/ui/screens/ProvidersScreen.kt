@@ -15,17 +15,37 @@ import androidx.compose.ui.unit.sp
 import com.ft991a.s2s.ui.theme.*
 import com.ft991a.s2s.viewmodel.RadioViewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProvidersScreen(viewModel: RadioViewModel, modifier: Modifier = Modifier) {
     val telemetry by viewModel.telemetry.collectAsState()
     val statusMsg by viewModel.statusMessage.collectAsState()
 
+    val supportedLanguages = listOf(
+        "en (English)",
+        "sk (Slovak)",
+        "cs (Czech)",
+        "de (German)",
+        "fr (French)",
+        "es (Spanish)",
+        "pl (Polish)",
+        "it (Italian)",
+        "uk (Ukrainian)",
+        "ja (Japanese)",
+        "nl (Dutch)",
+        "pt (Portuguese)",
+        "ru (Russian)",
+        "sv (Swedish)",
+        "hu (Hungarian)",
+        "hr (Croatian)"
+    )
+
     var pipelineMode by remember { mutableStateOf(telemetry.pipeline_mode) }
     var sttProvider by remember { mutableStateOf(telemetry.stt_provider) }
     var llmProvider by remember { mutableStateOf(telemetry.llm_provider) }
     var ttsProvider by remember { mutableStateOf(telemetry.tts_provider) }
-    var sttLang by remember { mutableStateOf("en") }
-    var ttsLang by remember { mutableStateOf("en") }
+    var selectedLanguage by remember { mutableStateOf("en (English)") }
+    var langExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -98,31 +118,45 @@ fun ProvidersScreen(viewModel: RadioViewModel, modifier: Modifier = Modifier) {
             colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CyanGlow)
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Row(modifier = Modifier.fillMaxWidth()) {
+        // Unified STT & TTS Language Single Dropdown
+        ExposedDropdownMenuBox(
+            expanded = langExpanded,
+            onExpandedChange = { langExpanded = !langExpanded },
+            modifier = Modifier.fillMaxWidth()
+        ) {
             OutlinedTextField(
-                value = sttLang,
-                onValueChange = { sttLang = it },
-                label = { Text("STT Language") },
-                modifier = Modifier.weight(1f),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CyanGlow)
+                value = selectedLanguage,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Language (STT & TTS Unified)") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = langExpanded) },
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CyanGlow),
+                modifier = Modifier.menuAnchor().fillMaxWidth()
             )
-            Spacer(modifier = Modifier.width(8.dp))
-            OutlinedTextField(
-                value = ttsLang,
-                onValueChange = { ttsLang = it },
-                label = { Text("TTS Language") },
-                modifier = Modifier.weight(1f),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CyanGlow)
-            )
+            ExposedDropdownMenu(
+                expanded = langExpanded,
+                onDismissRequest = { langExpanded = false }
+            ) {
+                supportedLanguages.forEach { lang ->
+                    DropdownMenuItem(
+                        text = { Text(lang) },
+                        onClick = {
+                            selectedLanguage = lang
+                            langExpanded = false
+                        }
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
         Button(
             onClick = {
-                viewModel.saveProviders(pipelineMode, sttProvider, llmProvider, ttsProvider, sttLang, ttsLang)
+                val langCode = selectedLanguage.substringBefore(" ").trim()
+                viewModel.saveProviders(pipelineMode, sttProvider, llmProvider, ttsProvider, langCode)
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GreenActive),
@@ -137,3 +171,4 @@ fun ProvidersScreen(viewModel: RadioViewModel, modifier: Modifier = Modifier) {
         }
     }
 }
+

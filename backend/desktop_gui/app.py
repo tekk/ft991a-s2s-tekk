@@ -15,7 +15,13 @@ from typing import Optional, Dict, Any, List
 
 import customtkinter as ctk
 
-from backend.config import config_manager
+from backend.config import (
+    config_manager,
+    SUPPORTED_LANGUAGES,
+    PREDEFINED_VHF_FREQUENCIES,
+    PREDEFINED_UHF_FREQUENCIES,
+    AUDIO_QUALITY_PRESETS,
+)
 from backend.cat.base import BaseRadio
 from backend.cat.ft991a import FT991ARadio
 from backend.cat.mock_radio import MockRadio
@@ -23,6 +29,7 @@ from backend.cat.auto_detect import auto_detect_serial_port
 from backend.audio.devices import get_audio_devices, auto_detect_audio_devices
 from backend.pipecat_bridge.skills import skill_manager
 from backend.openai_client.prompts import HAM_SYSTEM_PROMPT
+from backend.recording.recorder import audio_recorder
 
 logger = logging.getLogger("desktop_gui")
 
@@ -38,8 +45,8 @@ class FT991ADesktopApp(ctk.CTk):
         super().__init__()
 
         self.title("YAESU FT-991A AI S2S BRIDGE // PIPEcat RADIO CONSOLE")
-        self.geometry("1100x720")
-        self.minsize(950, 600)
+        self.geometry("1100x750")
+        self.minsize(950, 620)
         self.configure(fg_color="#080c14")
 
         self.radio: Optional[BaseRadio] = None
@@ -47,6 +54,7 @@ class FT991ADesktopApp(ctk.CTk):
         self.ptt_active = False
         self.s_meter_val = 0
         self.current_state = "IDLE"
+        self.selected_recording = None
 
         # Initialize Radio Driver
         cfg = config_manager.get()
@@ -97,12 +105,14 @@ class FT991ADesktopApp(ctk.CTk):
         self.tabview.pack(fill="both", expand=True, padx=15, pady=10)
 
         self.tab_dash = self.tabview.add("Transceiver Dashboard")
+        self.tab_recordings = self.tabview.add("Audio Recordings")
         self.tab_providers = self.tabview.add("AI & Pipeline")
         self.tab_skills = self.tabview.add("Agent Skills")
         self.tab_prompt = self.tabview.add("System Prompt")
         self.tab_hardware = self.tabview.add("Hardware & Ports")
 
         self._build_dashboard_tab()
+        self._build_recordings_tab()
         self._build_providers_tab()
         self._build_skills_tab()
         self._build_prompt_tab()
@@ -129,6 +139,14 @@ class FT991ADesktopApp(ctk.CTk):
         )
         self.meta_label.pack(pady=2)
 
+        self.offset_badge = ctk.CTkLabel(
+            vfo_frame,
+            text="REPEATER SHIFT: OFF",
+            font=ctk.CTkFont(family="Courier", size=11, weight="bold"),
+            text_color="#a0b3c6"
+        )
+        self.offset_badge.pack(pady=1)
+
         self.state_badge = ctk.CTkLabel(
             vfo_frame,
             text="STATE: IDLE // LISTENING FOR INCOMING TRANSMISSION",
@@ -136,6 +154,43 @@ class FT991ADesktopApp(ctk.CTk):
             text_color="#00e676"
         )
         self.state_badge.pack(pady=(2, 12))
+
+        # Frequency Tuning Controls Bar
+        tune_frame = ctk.CTkFrame(self.tab_dash, fg_color="#0d1524", corner_radius=10)
+        tune_frame.pack(fill="x", padx=10, pady=5)
+
+        tune_row = ctk.CTkFrame(tune_frame, fg_color="transparent")
+        tune_row.pack(fill="x", padx=10, pady=8)
+
+        # VHF Predefined Dropdown
+        vhf_labels = [f"{ch['name']}: {ch['freq_hz']/1e6:.4f} MHz ({ch['mode']})" for ch in PREDEFINED_VHF_FREQUENCIES]
+        self.sel_vhf = ctk.CTkComboBox(tune_row, values=["-- VHF PRESETS --"] + vhf_labels, width=220, command=self._on_vhf_selected)
+        self.sel_vhf.set("-- VHF PRESETS --")
+        self.sel_vhf.pack(side="left", padx=(0, 8))
+
+        # UHF Predefined Dropdown
+        uhf_labels = [f"{ch['name']}: {ch['freq_hz']/1e6:.4f} MHz ({ch['mode']})" for ch in PREDEFINED_UHF_FREQUENCIES]
+        self.sel_uhf = ctk.CTkComboBox(tune_row, values=["-- UHF PRESETS --"] + uhf_labels, width=220, command=self._on_uhf_selected)
+        self.sel_uhf.set("-- UHF PRESETS --")
+        self.sel_uhf.pack(side="left", padx=(0, 8))
+
+        # Direct Dial entry & set button
+        self.entry_direct_freq = ctk.CTkEntry(tune_row, placeholder_text="MHz (e.g. 144.200)", width=150)
+        self.entry_direct_freq.pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(tune_row, text="SET FREQ", width=80, fg_color="#00e5ff", text_color="#000000", command=self._set_direct_freq).pack(side="left", padx=(0, 8))
+
+        # Repeater Shift Toggle Button
+        cfg = config_manager.get()
+        self.btn_offset = ctk.CTkButton(
+            tune_row,
+            text=f"SPLIT SHIFT: {'ON' if cfg.repeater_offset_enabled else 'OFF'}",
+            fg_color="#00e676" if cfg.repeater_offset_enabled else "#18243b",
+            text_color="#000000" if cfg.repeater_offset_enabled else "#e0e6ed",
+            width=130,
+            command=self._toggle_repeater_offset
+        )
+        self.btn_offset.pack(side="right")
 
         # S-Meter & Audio Meters
         meters_frame = ctk.CTkFrame(self.tab_dash, fg_color="#0d1524", corner_radius=10)
@@ -185,6 +240,135 @@ class FT991ADesktopApp(ctk.CTk):
         self.txt_transcript.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.txt_transcript.insert("end", "[RX Operator] Standing by on frequency...\n[TX AI Agent] Station listening under FCC Part 97.\n")
 
+    def _on_vhf_selected(self, choice: str):
+        if choice.startswith("--"):
+            return
+        for ch in PREDEFINED_VHF_FREQUENCIES:
+            label = f"{ch['name']}: {ch['freq_hz']/1e6:.4f} MHz ({ch['mode']})"
+            if label == choice:
+                if self.radio:
+                    self.radio.set_frequency(ch["freq_hz"])
+                    self.radio.set_mode(ch["mode"])
+                config_manager.save({"current_frequency_hz": ch["freq_hz"], "current_mode": ch["mode"]})
+                break
+
+    def _on_uhf_selected(self, choice: str):
+        if choice.startswith("--"):
+            return
+        for ch in PREDEFINED_UHF_FREQUENCIES:
+            label = f"{ch['name']}: {ch['freq_hz']/1e6:.4f} MHz ({ch['mode']})"
+            if label == choice:
+                if self.radio:
+                    self.radio.set_frequency(ch["freq_hz"])
+                    self.radio.set_mode(ch["mode"])
+                config_manager.save({"current_frequency_hz": ch["freq_hz"], "current_mode": ch["mode"]})
+                break
+
+    def _set_direct_freq(self):
+        val = self.entry_direct_freq.get().strip()
+        try:
+            mhz = float(val)
+            hz = int(mhz * 1_000_000)
+            if self.radio:
+                self.radio.set_frequency(hz)
+            config_manager.save({"current_frequency_hz": hz})
+        except ValueError:
+            pass
+
+    def _toggle_repeater_offset(self):
+        cfg = config_manager.get()
+        new_state = not cfg.repeater_offset_enabled
+        config_manager.save({"repeater_offset_enabled": new_state})
+        if self.radio:
+            active_offset = cfg.vhf_offset_mhz if (self.radio.get_frequency() < 300_000_000) else cfg.uhf_offset_mhz
+            self.radio.set_repeater_offset(active_offset, new_state)
+        self.btn_offset.configure(
+            text=f"SPLIT SHIFT: {'ON' if new_state else 'OFF'}",
+            fg_color="#00e676" if new_state else "#18243b",
+            text_color="#000000" if new_state else "#e0e6ed"
+        )
+
+    def _build_recordings_tab(self):
+        f = ctk.CTkFrame(self.tab_recordings, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=15, pady=15)
+
+        ctk.CTkLabel(f, text="HISTORICAL AUDIO RECORDINGS & PLAYBACK", font=ctk.CTkFont(size=16, weight="bold"), text_color="#00e5ff").pack(anchor="w", pady=(0, 10))
+
+        # Filter and Search bar
+        bar = ctk.CTkFrame(f, fg_color="#0d1524", corner_radius=8)
+        bar.pack(fill="x", pady=(0, 10))
+
+        bar_inner = ctk.CTkFrame(bar, fg_color="transparent")
+        bar_inner.pack(fill="x", padx=10, pady=8)
+
+        self.rec_filter_var = ctk.StringVar(value="ALL")
+        ctk.CTkSegmentedButton(bar_inner, values=["ALL", "RX", "TX"], variable=self.rec_filter_var, command=lambda v: self._refresh_recordings()).pack(side="left", padx=(0, 10))
+
+        self.rec_search_entry = ctk.CTkEntry(bar_inner, placeholder_text="Search transcripts or files...", width=260)
+        self.rec_search_entry.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(bar_inner, text="SEARCH", width=70, fg_color="#00e5ff", text_color="#000000", command=self._refresh_recordings).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(bar_inner, text="REFRESH", width=70, fg_color="#18243b", text_color="#00e5ff", command=self._refresh_recordings).pack(side="left")
+
+        # Recordings listbox
+        self.recordings_box = ctk.CTkTextbox(f, height=220, fg_color="#0d1524", font=ctk.CTkFont(family="Courier", size=11))
+        self.recordings_box.pack(fill="both", expand=True, pady=(0, 10))
+
+        # Action controls for selected recording
+        act_frame = ctk.CTkFrame(f, fg_color="#0d1524", corner_radius=8)
+        act_frame.pack(fill="x")
+
+        act_inner = ctk.CTkFrame(act_frame, fg_color="transparent")
+        act_inner.pack(fill="x", padx=10, pady=10)
+
+        self.rec_file_entry = ctk.CTkEntry(act_inner, placeholder_text="Recording filename (e.g. rx_20261008_120000.opus)", width=320)
+        self.rec_file_entry.pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(act_inner, text="PLAY ON RADIO / HOST", fg_color="#00e676", text_color="#000000", command=self._play_recording_host).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(act_inner, text="STOP PLAYBACK", fg_color="#ff9800", text_color="#000000", command=self._stop_recording_playback).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(act_inner, text="DELETE", fg_color="#ff1744", command=self._delete_recording).pack(side="left")
+
+        self._refresh_recordings()
+
+    def _refresh_recordings(self):
+        f_type = self.rec_filter_var.get()
+        f_arg = None if f_type == "ALL" else f_type
+        search_q = self.rec_search_entry.get().strip() or None
+
+        items = audio_recorder.list_recordings(filter_type=f_arg, search=search_q)
+        self.recordings_box.delete("1.0", "end")
+
+        if not items:
+            self.recordings_box.insert("end", "No recordings found matching filter.\n")
+            return
+
+        for r in items:
+            t_type = r.get("type", "RX")
+            fn = r.get("filename", "")
+            fmt = r.get("format", "").upper()
+            bitrate = r.get("bitrate", "")
+            dur = r.get("duration", 0.0)
+            trans = r.get("transcript", "")
+            size_kb = r.get("size_bytes", 0) / 1024
+
+            line = f"[{t_type}] {fn} | {fmt} {bitrate} | {dur:.1f}s | {size_kb:.0f}KB\n"
+            if trans:
+                line += f"       Quote: \"{trans}\"\n"
+            self.recordings_box.insert("end", line)
+
+    def _play_recording_host(self):
+        fn = self.rec_file_entry.get().strip()
+        if fn:
+            threading.Thread(target=audio_recorder.play_recording_locally, args=(fn,), daemon=True).start()
+
+    def _stop_recording_playback(self):
+        audio_recorder.stop_local_playback()
+
+    def _delete_recording(self):
+        fn = self.rec_file_entry.get().strip()
+        if fn:
+            audio_recorder.delete_recording(fn)
+            self._refresh_recordings()
+
     def _build_providers_tab(self):
         cfg = config_manager.get()
         f = ctk.CTkScrollableFrame(self.tab_providers, fg_color="transparent")
@@ -212,19 +396,46 @@ class FT991ADesktopApp(ctk.CTk):
         self.tts_var = ctk.StringVar(value=cfg.tts_provider)
         ctk.CTkComboBox(f, values=["cartesia", "elevenlabs", "openai", "mock"], variable=self.tts_var, width=300).pack(anchor="w", pady=(4, 12))
 
-        # Languages
-        lang_frame = ctk.CTkFrame(f, fg_color="transparent")
-        lang_frame.pack(fill="x", pady=5)
+        # Unified STT & TTS Language Single Dropdown
+        ctk.CTkLabel(f, text="Language (STT & TTS Unified):", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        lang_options = [l["label"] for l in SUPPORTED_LANGUAGES]
+        current_lang_label = next((l["label"] for l in SUPPORTED_LANGUAGES if l["code"] == cfg.language), "en (English)")
+        self.lang_var = ctk.StringVar(value=current_lang_label)
+        self.lang_combo = ctk.CTkComboBox(f, values=lang_options, variable=self.lang_var, width=300)
+        self.lang_combo.pack(anchor="w", pady=(4, 8))
 
-        ctk.CTkLabel(lang_frame, text="STT Language Code:").grid(row=0, column=0, sticky="w", padx=5)
-        self.stt_lang_entry = ctk.CTkEntry(lang_frame, width=120)
-        self.stt_lang_entry.insert(0, cfg.stt_language)
-        self.stt_lang_entry.grid(row=1, column=0, sticky="w", padx=5, pady=(2, 10))
+        # National Regulations Jurisdiction
+        ctk.CTkLabel(f, text="National Regulations Jurisdiction:", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        reg_map = {
+            "auto": "Auto (Detect from callsign/lang)",
+            "SK": "Slovakia (RÚ)",
+            "CZ": "Czech Republic (ČTÚ)",
+            "DE": "Germany (BNetzA)",
+            "US": "United States (FCC Part 97)",
+            "UK": "United Kingdom (Ofcom)",
+            "FR": "France (ARCEP)",
+            "ES": "Spain (CNMC)",
+            "IT": "Italy (MIMIT)",
+            "PL": "Poland (UKE)",
+            "JA": "Japan (MIC / 電波法)",
+            "ITU": "International (ITU)",
+        }
+        self.reg_inv_map = {v: k for k, v in reg_map.items()}
+        cur_reg_label = reg_map.get(cfg.regulatory_jurisdiction, "Auto (Detect from callsign/lang)")
+        self.reg_var = ctk.StringVar(value=cur_reg_label)
+        self.reg_combo = ctk.CTkComboBox(f, values=list(reg_map.values()), variable=self.reg_var, width=300)
+        self.reg_combo.pack(anchor="w", pady=(4, 12))
 
-        ctk.CTkLabel(lang_frame, text="TTS Language Code:").grid(row=0, column=1, sticky="w", padx=20)
-        self.tts_lang_entry = ctk.CTkEntry(lang_frame, width=120)
-        self.tts_lang_entry.insert(0, cfg.tts_language)
-        self.tts_lang_entry.grid(row=1, column=1, sticky="w", padx=20, pady=(2, 10))
+        # Audio Archiving Quality & Preset
+        ctk.CTkLabel(f, text="Audio Recording Format & Quality Preset:", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        rec_frame = ctk.CTkFrame(f, fg_color="transparent")
+        rec_frame.pack(fill="x", pady=(2, 12))
+
+        self.rec_format_var = ctk.StringVar(value=cfg.recording_format)
+        ctk.CTkComboBox(rec_frame, values=["opus", "mp3", "m4a", "ogg", "wav"], variable=self.rec_format_var, width=140).pack(side="left", padx=(0, 10))
+
+        self.rec_preset_var = ctk.StringVar(value=cfg.recording_preset)
+        ctk.CTkComboBox(rec_frame, values=["eco", "standard", "high", "studio", "custom"], variable=self.rec_preset_var, width=150).pack(side="left")
 
         # API Keys Section
         ctk.CTkLabel(f, text="API Keys Configuration:", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00e5ff").pack(anchor="w", pady=(15, 5))
@@ -240,6 +451,7 @@ class FT991ADesktopApp(ctk.CTk):
             self.key_entries[key_name] = e
 
         ctk.CTkButton(f, text="SAVE AI PROVIDERS & KEYS", fg_color="#00e676", text_color="#000000", height=40, command=self._save_providers).pack(anchor="w", pady=15)
+
 
     def _build_skills_tab(self):
         f = ctk.CTkFrame(self.tab_skills, fg_color="transparent")
@@ -367,7 +579,22 @@ class FT991ADesktopApp(ctk.CTk):
         ctk.CTkLabel(f, text="S-Meter Threshold (0 - 255):").pack(anchor="w")
         self.smeter_thresh_entry = ctk.CTkEntry(f, width=200)
         self.smeter_thresh_entry.insert(0, str(cfg.s_meter_threshold))
-        self.smeter_thresh_entry.pack(anchor="w", pady=(2, 15))
+        self.smeter_thresh_entry.pack(anchor="w", pady=(2, 10))
+
+        # Repeater Offsets Configuration
+        ctk.CTkLabel(f, text="VHF & UHF Repeater Frequency Offsets (MHz):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(10, 2))
+        offset_row = ctk.CTkFrame(f, fg_color="transparent")
+        offset_row.pack(fill="x", pady=(2, 15))
+
+        ctk.CTkLabel(offset_row, text="VHF Offset (MHz):").pack(side="left", padx=(0, 5))
+        self.vhf_offset_entry = ctk.CTkEntry(offset_row, width=80)
+        self.vhf_offset_entry.insert(0, str(cfg.vhf_offset_mhz))
+        self.vhf_offset_entry.pack(side="left", padx=(0, 20))
+
+        ctk.CTkLabel(offset_row, text="UHF Offset (MHz):").pack(side="left", padx=(0, 5))
+        self.uhf_offset_entry = ctk.CTkEntry(offset_row, width=80)
+        self.uhf_offset_entry.insert(0, str(cfg.uhf_offset_mhz))
+        self.uhf_offset_entry.pack(side="left")
 
         ctk.CTkButton(f, text="APPLY HARDWARE CONFIGURATION", fg_color="#00e676", text_color="#000000", height=40, command=self._save_hardware).pack(anchor="w")
 
@@ -384,13 +611,22 @@ class FT991ADesktopApp(ctk.CTk):
         auto_detect_audio_devices()
 
     def _save_providers(self):
+        selected_label = self.lang_var.get()
+        # Parse language code e.g. "sk" from "sk (Slovak)"
+        lang_code = selected_label.split()[0] if selected_label else "en"
+        reg_code = getattr(self, "reg_inv_map", {}).get(self.reg_var.get(), "auto")
+
         updates = {
             "pipeline_mode": self.mode_var.get(),
             "stt_provider": self.stt_var.get(),
             "llm_provider": self.llm_var.get(),
             "tts_provider": self.tts_var.get(),
-            "stt_language": self.stt_lang_entry.get().strip(),
-            "tts_language": self.tts_lang_entry.get().strip(),
+            "language": lang_code,
+            "stt_language": lang_code,
+            "tts_language": lang_code,
+            "regulatory_jurisdiction": reg_code,
+            "recording_format": self.rec_format_var.get(),
+            "recording_preset": self.rec_preset_var.get(),
         }
         for k, entry in self.key_entries.items():
             updates[k] = entry.get().strip()
@@ -401,11 +637,22 @@ class FT991ADesktopApp(ctk.CTk):
         port = self.port_entry.get().strip()
         baud = int(self.baud_var.get())
         thresh = int(self.smeter_thresh_entry.get().strip())
+        try:
+            vhf_off = float(self.vhf_offset_entry.get().strip())
+        except ValueError:
+            vhf_off = -0.6
+        try:
+            uhf_off = float(self.uhf_offset_entry.get().strip())
+        except ValueError:
+            uhf_off = -7.6
+
         config_manager.save({
             "serial_port": port,
             "preferred_serial_port": port,
             "baud_rate": baud,
             "s_meter_threshold": thresh,
+            "vhf_offset_mhz": vhf_off,
+            "uhf_offset_mhz": uhf_off,
         })
         if self.radio:
             self.radio.disconnect()
@@ -435,9 +682,24 @@ class FT991ADesktopApp(ctk.CTk):
                 self.ptt_active = telem.get("ptt_active", False)
                 self.s_meter_val = telem.get("s_meter", 0)
                 s_label = telem.get("s_meter_label", "S0")
+                offset_enabled = telem.get("repeater_offset_enabled", False)
+                offset_mhz = telem.get("repeater_offset_mhz", -0.6)
+                band = telem.get("band", "")
 
                 self.freq_label.configure(text=freq_str)
                 self.meta_label.configure(text=f"MODE: {mode}  |  POWER: {power}W  |  CAT: ONLINE")
+
+                if offset_enabled:
+                    tx_freq_str = telem.get("tx_frequency_formatted", "")
+                    self.offset_badge.configure(
+                        text=f"REPEATER SHIFT: ON ({offset_mhz:+.1f} MHz) -> TX: {tx_freq_str}",
+                        text_color="#ff9800"
+                    )
+                else:
+                    self.offset_badge.configure(
+                        text="REPEATER SHIFT: OFF (SIMPLEX)",
+                        text_color="#7b8c9e"
+                    )
 
                 # Meter bar
                 norm = min(max(self.s_meter_val / 255.0, 0.0), 1.0)

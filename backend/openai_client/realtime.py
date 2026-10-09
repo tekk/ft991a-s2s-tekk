@@ -84,6 +84,8 @@ class OpenAIRealtimeClient:
         system_prompt = generate_system_prompt(
             callsign=cfg.callsign,
             custom_instructions=cfg.system_prompt_custom,
+            language=cfg.language,
+            regulatory_jurisdiction=cfg.regulatory_jurisdiction,
         )
 
         session_config = {

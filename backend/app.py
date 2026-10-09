@@ -18,13 +18,23 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from backend.config import config_manager, RECORDINGS_DIR, BASE_DIR
+from backend.config import (
+    config_manager,
+    RECORDINGS_DIR,
+    BASE_DIR,
+    SUPPORTED_LANGUAGES,
+    PREDEFINED_VHF_FREQUENCIES,
+    PREDEFINED_UHF_FREQUENCIES,
+    AUDIO_QUALITY_PRESETS,
+)
 from backend.port_finder import resolve_web_port, get_local_ip_addresses
 from backend.cat.ft991a import FT991ARadio
 from backend.audio.devices import get_audio_devices
 from backend.recording.disk_manager import disk_manager
+from backend.recording.recorder import audio_recorder
 from backend.orchestrator import orchestrator
 from backend.console_ui import run_console_dashboard
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("app")
@@ -100,10 +110,107 @@ async def purge_recordings():
     return result
 
 
+@app.get("/api/languages")
+async def get_languages():
+    """List supported STT & TTS languages."""
+    cfg = config_manager.get()
+    return {
+        "active": cfg.language,
+        "languages": SUPPORTED_LANGUAGES,
+    }
+
+
+@app.get("/api/regulations")
+async def get_regulations():
+    """Get active national radio regulation, detected jurisdiction, and supported frameworks."""
+    from backend.regulations import resolve_regulation, list_supported_regulations, detect_jurisdiction_from_callsign
+    cfg = config_manager.get()
+    active_reg = resolve_regulation(cfg.callsign, cfg.language, cfg.regulatory_jurisdiction)
+    detected_code = detect_jurisdiction_from_callsign(cfg.callsign)
+    return {
+        "active_jurisdiction": active_reg.jurisdiction_code,
+        "active_regulation": active_reg.to_dict(),
+        "configured_jurisdiction": cfg.regulatory_jurisdiction,
+        "detected_from_callsign": detected_code,
+        "callsign": cfg.callsign,
+        "language": cfg.language,
+        "supported_regulations": list_supported_regulations(),
+    }
+
+
+@app.get("/api/frequencies/predefined")
+async def get_predefined_frequencies():
+    """Get predefined VHF and UHF frequencies and repeater offset settings."""
+    cfg = config_manager.get()
+    return {
+        "vhf": PREDEFINED_VHF_FREQUENCIES,
+        "uhf": PREDEFINED_UHF_FREQUENCIES,
+        "vhf_offset_mhz": cfg.vhf_offset_mhz,
+        "uhf_offset_mhz": cfg.uhf_offset_mhz,
+        "repeater_offset_enabled": cfg.repeater_offset_enabled,
+        "current_frequency_hz": cfg.current_frequency_hz,
+        "current_mode": cfg.current_mode,
+    }
+
+
+@app.post("/api/frequency")
+async def change_frequency(payload: Dict[str, Any]):
+    """Change radio frequency, mode, and repeater offset."""
+    freq_hz = payload.get("frequency_hz")
+    if freq_hz is None:
+        raise HTTPException(status_code=400, detail="frequency_hz is required")
+    mode = payload.get("mode")
+    repeater_offset_enabled = payload.get("repeater_offset_enabled")
+    offset_mhz = payload.get("offset_mhz")
+
+    status = orchestrator.set_frequency(
+        freq_hz=int(freq_hz),
+        mode=mode,
+        repeater_offset_enabled=repeater_offset_enabled,
+        offset_mhz=float(offset_mhz) if offset_mhz is not None else None,
+    )
+    return {"status": "ok", "frequency_hz": int(freq_hz), "radio": status}
+
+
 @app.get("/api/recordings")
-async def get_recordings():
-    """List recent audio transmissions."""
-    return orchestrator.transmission_log
+async def get_recordings(
+    type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List historical audio transmissions from disk and in-memory log."""
+    return audio_recorder.list_recordings(
+        filter_type=type,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.delete("/api/recordings/{filename}")
+async def delete_recording(filename: str):
+    """Delete a recording from disk and metadata index."""
+    success = audio_recorder.delete_recording(filename)
+    if not success:
+        raise HTTPException(status_code=404, detail="Recording not found or could not be deleted")
+    return {"status": "ok", "deleted": filename}
+
+
+@app.post("/api/recordings/{filename}/play")
+async def play_recording(filename: str):
+    """Trigger host audio playback of recording."""
+    success = audio_recorder.play_recording_locally(filename)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to play audio recording locally")
+    return {"status": "ok", "playing": filename}
+
+
+@app.post("/api/recordings/stop-play")
+async def stop_playing_recording():
+    """Stop active host audio playback."""
+    audio_recorder.stop_local_playback()
+    return {"status": "ok", "stopped": True}
 
 
 @app.post("/api/simulate-rx")
@@ -119,6 +226,7 @@ async def set_manual_ptt(payload: Dict[str, bool]):
     active = payload.get("active", False)
     orchestrator.set_manual_ptt(active)
     return {"status": "ok", "ptt_active": active}
+
 
 
 # --- Pipecat Skills, Prompts, and Providers Endpoints ---
@@ -161,9 +269,13 @@ async def test_skill_execution(skill_name: str, payload: Dict[str, Any] = {}):
 @app.get("/api/system-prompt")
 async def get_system_prompt():
     """Get active system prompt and ham radio template."""
-    from backend.openai_client.prompts import HAM_SYSTEM_PROMPT
+    from backend.openai_client.prompts import generate_system_prompt
     cfg = config_manager.get()
-    default_prompt = HAM_SYSTEM_PROMPT.format(callsign=cfg.callsign)
+    default_prompt = generate_system_prompt(
+        callsign=cfg.callsign,
+        language=cfg.language,
+        regulatory_jurisdiction=cfg.regulatory_jurisdiction,
+    )
     active = cfg.custom_system_prompt if cfg.custom_system_prompt else default_prompt
     return {
         "system_prompt": active,
@@ -201,8 +313,11 @@ async def get_providers():
             "elevenlabs_voice": cfg.elevenlabs_voice_id,
         },
         "languages": {
+            "language": cfg.language,
             "stt": cfg.stt_language,
             "tts": cfg.tts_language,
+            "regulatory_jurisdiction": cfg.regulatory_jurisdiction,
+            "supported": SUPPORTED_LANGUAGES,
         },
         "keys_configured": {
             "openai": bool(cfg.openai_api_key),
@@ -246,6 +361,16 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "set_threshold":
                 new_thresh = int(data.get("threshold", 80))
                 config_manager.save({"s_meter_threshold": new_thresh})
+            elif action == "set_frequency":
+                freq = data.get("frequency_hz")
+                if freq:
+                    orchestrator.set_frequency(
+                        freq_hz=int(freq),
+                        mode=data.get("mode"),
+                        repeater_offset_enabled=data.get("repeater_offset_enabled"),
+                        offset_mhz=data.get("offset_mhz"),
+                    )
+
     except WebSocketDisconnect:
         orchestrator.unregister_websocket(websocket)
     except Exception:

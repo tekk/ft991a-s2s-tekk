@@ -26,7 +26,13 @@ from textual.widgets import (
 )
 from textual.binding import Binding
 
-from backend.config import config_manager
+from backend.config import (
+    config_manager,
+    SUPPORTED_LANGUAGES,
+    PREDEFINED_VHF_FREQUENCIES,
+    PREDEFINED_UHF_FREQUENCIES,
+    AUDIO_QUALITY_PRESETS,
+)
 from backend.cat.base import BaseRadio
 from backend.cat.ft991a import FT991ARadio
 from backend.cat.mock_radio import MockRadio
@@ -34,6 +40,7 @@ from backend.cat.auto_detect import auto_detect_serial_port
 from backend.audio.devices import get_audio_devices, auto_detect_audio_devices
 from backend.pipecat_bridge.skills import skill_manager
 from backend.openai_client.prompts import HAM_SYSTEM_PROMPT
+from backend.recording.recorder import audio_recorder
 
 logger = logging.getLogger("tui")
 
@@ -191,6 +198,14 @@ class FT991ATuiApp(App):
                     yield Button("SIMULATE RX (4s)", id="btn-sim-rx", variant="primary")
                     yield Button("AUTO-DETECT PORT", id="btn-autodetect-cat", variant="success")
 
+                # Frequency Channel Presets & Repeater Split
+                with Horizontal(classes="action-bar"):
+                    yield Button("VHF CALL (145.500)", id="btn-vhf-call")
+                    yield Button("VHF R1 RPT (145.625)", id="btn-vhf-r1")
+                    yield Button("UHF CALL (433.500)", id="btn-uhf-call")
+                    yield Button("UHF RU700 (438.650)", id="btn-uhf-r700")
+                    yield Button("SPLIT SHIFT", id="btn-split-toggle", variant="primary")
+
                 # Live Transcripts
                 with Horizontal():
                     with Vertical(classes="transcript-panel"):
@@ -199,6 +214,17 @@ class FT991ATuiApp(App):
                     with Vertical(classes="transcript-panel"):
                         yield Label("[TX] AI ASSISTANT RESPONSE:")
                         yield Static(self.ai_transcript, id="tx-transcript")
+
+            with TabPane("Recordings", id="tab-recordings"):
+                with Vertical(classes="settings-group"):
+                    yield Label("HISTORICAL TRANSMISSION RECORDINGS", classes="settings-label")
+                    yield DataTable(id="recordings-table")
+                    with Horizontal():
+                        yield Input(placeholder="Recording filename (e.g. rx_20261008_120000.opus)", id="input-rec-file")
+                        yield Button("PLAY ON HOST", id="btn-play-rec", variant="success")
+                        yield Button("STOP PLAYBACK", id="btn-stop-rec", variant="primary")
+                        yield Button("DELETE", id="btn-del-rec", variant="error")
+                        yield Button("REFRESH", id="btn-refresh-recs", variant="primary")
 
             with TabPane("AI & Providers", id="tab-providers"):
                 with Vertical(classes="settings-group"):
@@ -230,20 +256,50 @@ class FT991ATuiApp(App):
                         id="sel-tts-provider"
                     )
 
+                    yield Label("LANGUAGE (STT & TTS UNIFIED)", classes="settings-label")
+                    lang_select_options = [(l["label"], l["code"]) for l in SUPPORTED_LANGUAGES]
+                    current_lang_code = config_manager.get().language
+                    yield Select(
+                        lang_select_options,
+                        value=current_lang_code,
+                        id="sel-language"
+                    )
+
+                    yield Label("NATIONAL REGULATIONS JURISDICTION", classes="settings-label")
+                    reg_options = [
+                        ("Auto (Detect from callsign/lang)", "auto"),
+                        ("Slovakia (RÚ)", "SK"),
+                        ("Czech Republic (ČTÚ)", "CZ"),
+                        ("Germany (BNetzA)", "DE"),
+                        ("United States (FCC Part 97)", "US"),
+                        ("United Kingdom (Ofcom)", "UK"),
+                        ("France (ARCEP)", "FR"),
+                        ("Spain (CNMC)", "ES"),
+                        ("Italy (MIMIT)", "IT"),
+                        ("Poland (UKE)", "PL"),
+                        ("Japan (MIC / 電波法)", "JA"),
+                        ("International (ITU)", "ITU"),
+                    ]
+                    yield Select(
+                        reg_options,
+                        value=config_manager.get().regulatory_jurisdiction,
+                        id="sel-regulations"
+                    )
+
                     with Horizontal():
                         with Vertical():
-                            yield Label("STT LANGUAGE", classes="settings-label")
+                            yield Label("RECORDING FORMAT", classes="settings-label")
                             yield Select(
-                                [("English (en)", "en"), ("Spanish (es)", "es"), ("German (de)", "de"), ("French (fr)", "fr"), ("Japanese (ja)", "ja"), ("Polish (pl)", "pl"), ("Czech (cs)", "cs")],
-                                value=config_manager.get().stt_language,
-                                id="sel-stt-lang"
+                                [("OPUS", "opus"), ("MP3", "mp3"), ("M4A", "m4a"), ("OGG", "ogg"), ("WAV", "wav")],
+                                value=config_manager.get().recording_format,
+                                id="sel-rec-format"
                             )
                         with Vertical():
-                            yield Label("TTS LANGUAGE", classes="settings-label")
+                            yield Label("QUALITY PRESET", classes="settings-label")
                             yield Select(
-                                [("English (en)", "en"), ("Spanish (es)", "es"), ("German (de)", "de"), ("French (fr)", "fr"), ("Japanese (ja)", "ja"), ("Polish (pl)", "pl"), ("Czech (cs)", "cs")],
-                                value=config_manager.get().tts_language,
-                                id="sel-tts-lang"
+                                [("Eco", "eco"), ("Standard", "standard"), ("High", "high"), ("Studio", "studio"), ("Custom", "custom")],
+                                value=config_manager.get().recording_preset,
+                                id="sel-rec-preset"
                             )
 
                     yield Button("SAVE AI CONFIGURATION", id="btn-save-providers", variant="success")
@@ -305,9 +361,11 @@ class FT991ATuiApp(App):
         yield Footer()
 
     def on_tabbed_content_tab_activated(self, event):
-        """Populate skills table when skills tab is activated."""
+        """Populate skills or recordings table when tab is activated."""
         if event.tab.id == "tab-skills":
             self.refresh_skills_table()
+        elif event.tab.id == "tab-recordings":
+            self.refresh_recordings_table()
 
     def refresh_skills_table(self):
         table = self.query_one("#skills-table", DataTable)
@@ -317,6 +375,22 @@ class FT991ATuiApp(App):
         for s in skills:
             params = ", ".join(s.get("parameters", {}).get("properties", {}).keys())
             table.add_row(s.get("name", ""), s.get("description", "")[:60], params or "None")
+
+    def refresh_recordings_table(self):
+        table = self.query_one("#recordings-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("Type", "Filename", "Format", "Duration", "Size (KB)", "Transcript")
+        items = audio_recorder.list_recordings()
+        for r in items:
+            size_kb = f"{r.get('size_bytes', 0) / 1024:.0f}"
+            table.add_row(
+                r.get("type", "RX"),
+                r.get("filename", ""),
+                r.get("format", "").upper(),
+                f"{r.get('duration', 0.0):.1f}s",
+                size_kb,
+                r.get("transcript", "")[:40]
+            )
 
     def update_telemetry(self):
         """Poll transceiver telemetry and update visual dashboard."""
@@ -331,10 +405,13 @@ class FT991ATuiApp(App):
             self.ptt_active = telemetry.get("ptt_active", False)
             self.s_meter_val = telemetry.get("s_meter", 0)
             s_label = telemetry.get("s_meter_label", "S0")
+            offset_enabled = telemetry.get("repeater_offset_enabled", False)
+            offset_mhz = telemetry.get("repeater_offset_mhz", -0.6)
 
             # Update VFO
             self.query_one("#vfo-freq", Static).update(freq_str)
-            self.query_one("#vfo-meta", Static).update(f"MODE: {mode}  |  POWER: {power}W  |  CAT: ONLINE")
+            split_info = f"SPLIT: {offset_mhz:+.1f}M" if offset_enabled else "SIMPLEX"
+            self.query_one("#vfo-meta", Static).update(f"MODE: {mode}  |  POWER: {power}W  |  {split_info}  |  CAT: ONLINE")
 
             # State & badge
             cfg = config_manager.get()
@@ -381,6 +458,43 @@ class FT991ATuiApp(App):
         elif btn_id == "btn-sim-rx":
             self.action_simulate_rx()
 
+        elif btn_id == "btn-vhf-call":
+            if self.radio:
+                self.radio.set_frequency(145_500_000)
+                self.radio.set_mode("FM")
+            config_manager.save({"current_frequency_hz": 145_500_000, "current_mode": "FM"})
+            self.notify("Tuned to 145.500 MHz FM (VHF Calling)")
+
+        elif btn_id == "btn-vhf-r1":
+            if self.radio:
+                self.radio.set_frequency(145_625_000)
+                self.radio.set_mode("FM")
+            config_manager.save({"current_frequency_hz": 145_625_000, "current_mode": "FM"})
+            self.notify("Tuned to 145.625 MHz FM (VHF R1 Repeater)")
+
+        elif btn_id == "btn-uhf-call":
+            if self.radio:
+                self.radio.set_frequency(433_500_000)
+                self.radio.set_mode("FM")
+            config_manager.save({"current_frequency_hz": 433_500_000, "current_mode": "FM"})
+            self.notify("Tuned to 433.500 MHz FM (UHF Calling)")
+
+        elif btn_id == "btn-uhf-r700":
+            if self.radio:
+                self.radio.set_frequency(438_650_000)
+                self.radio.set_mode("FM")
+            config_manager.save({"current_frequency_hz": 438_650_000, "current_mode": "FM"})
+            self.notify("Tuned to 438.650 MHz FM (UHF RU700 Repeater)")
+
+        elif btn_id == "btn-split-toggle":
+            cfg = config_manager.get()
+            new_st = not cfg.repeater_offset_enabled
+            config_manager.save({"repeater_offset_enabled": new_st})
+            if self.radio:
+                offset_mhz = cfg.vhf_offset_mhz if (self.radio.get_frequency() < 300_000_000) else cfg.uhf_offset_mhz
+                self.radio.set_repeater_offset(offset_mhz, new_st)
+            self.notify(f"Repeater split offset {'ENABLED' if new_st else 'DISABLED'}")
+
         elif btn_id in ("btn-autodetect-cat", "btn-auto-cat"):
             self.action_auto_detect_all()
 
@@ -388,17 +502,45 @@ class FT991ATuiApp(App):
             devs = auto_detect_audio_devices()
             self.notify(f"Auto-detected audio: in={devs.get('input_id')}, out={devs.get('output_id')}")
 
+        elif btn_id == "btn-refresh-recs":
+            self.refresh_recordings_table()
+            self.notify("Recordings list refreshed.")
+
+        elif btn_id == "btn-play-rec":
+            rec_file = self.query_one("#input-rec-file", Input).value.strip()
+            if rec_file:
+                import threading
+                threading.Thread(target=audio_recorder.play_recording_locally, args=(rec_file,), daemon=True).start()
+                self.notify(f"Playing {rec_file} on host soundcard...")
+
+        elif btn_id == "btn-stop-rec":
+            audio_recorder.stop_local_playback()
+            self.notify("Playback stopped.")
+
+        elif btn_id == "btn-del-rec":
+            rec_file = self.query_one("#input-rec-file", Input).value.strip()
+            if rec_file:
+                audio_recorder.delete_recording(rec_file)
+                self.refresh_recordings_table()
+                self.notify(f"Deleted {rec_file}.")
+
         elif btn_id == "btn-save-providers":
+            chosen_lang = self.query_one("#sel-language", Select).value
+            chosen_reg = self.query_one("#sel-regulations", Select).value
             updates = {
                 "pipeline_mode": self.query_one("#sel-pipeline-mode", Select).value,
                 "stt_provider": self.query_one("#sel-stt-provider", Select).value,
                 "llm_provider": self.query_one("#sel-llm-provider", Select).value,
                 "tts_provider": self.query_one("#sel-tts-provider", Select).value,
-                "stt_language": self.query_one("#sel-stt-lang", Select).value,
-                "tts_language": self.query_one("#sel-tts-lang", Select).value,
+                "language": chosen_lang,
+                "stt_language": chosen_lang,
+                "tts_language": chosen_lang,
+                "regulatory_jurisdiction": chosen_reg,
+                "recording_format": self.query_one("#sel-rec-format", Select).value,
+                "recording_preset": self.query_one("#sel-rec-preset", Select).value,
             }
             config_manager.save(updates)
-            self.notify("AI Provider and Language configuration saved successfully.")
+            self.notify("AI Provider, unified language, regulations, and recording settings saved.")
 
         elif btn_id == "btn-save-prompt":
             callsign = self.query_one("#input-callsign", Input).value.strip().upper()

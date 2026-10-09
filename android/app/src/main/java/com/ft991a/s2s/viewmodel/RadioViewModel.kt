@@ -120,8 +120,7 @@ class RadioViewModel : ViewModel() {
         sttProvider: String,
         llmProvider: String,
         ttsProvider: String,
-        sttLang: String,
-        ttsLang: String
+        language: String
     ) {
         viewModelScope.launch {
             val updates = mapOf(
@@ -129,13 +128,24 @@ class RadioViewModel : ViewModel() {
                 "stt_provider" to sttProvider,
                 "llm_provider" to llmProvider,
                 "tts_provider" to ttsProvider,
-                "stt_language" to sttLang,
-                "tts_language" to ttsLang
+                "language" to language,
+                "stt_language" to language,
+                "tts_language" to language
             )
             val ok = apiClient.updateProviders(updates)
             _statusMessage.value = if (ok) "Providers configuration updated" else "Failed to update providers"
         }
     }
+
+    fun saveProviders(
+        pipelineMode: String,
+        sttProvider: String,
+        llmProvider: String,
+        ttsProvider: String,
+        sttLang: String,
+        ttsLang: String
+    ) = saveProviders(pipelineMode, sttProvider, llmProvider, ttsProvider, sttLang)
+
 
     override fun onCleared() {
         super.onCleared()

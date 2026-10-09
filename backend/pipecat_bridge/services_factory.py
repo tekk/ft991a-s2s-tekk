@@ -23,8 +23,9 @@ from pipecat.frames.frames import (
 )
 
 from backend.config import AppConfig, config_manager
-from backend.openai_client.prompts import HAM_SYSTEM_PROMPT
+from backend.openai_client.prompts import HAM_SYSTEM_PROMPT, generate_system_prompt
 from backend.pipecat_bridge.skills import skill_manager
+from backend.localization import get_spoken_text
 
 logger = logging.getLogger("services_factory")
 
@@ -55,7 +56,12 @@ class MockLLMService(FrameProcessor):
             cfg = config_manager.get()
             callsign = cfg.callsign
             text = frame.text if hasattr(frame, "text") else ""
-            reply = f"{callsign} roger copy your signal 59 on 20 meters. 73!"
+            reply = get_spoken_text(
+                "mock_qso_reply",
+                language=cfg.language,
+                callsign=callsign,
+                band="20m",
+            )
             await self.push_frame(LLMTextFrame(text=reply), direction)
             await self.push_frame(LLMFullResponseEndFrame(), direction)
             return
@@ -87,11 +93,21 @@ class MockTTSService(FrameProcessor):
 # --- Service Builders ---
 
 def build_system_instruction(cfg: AppConfig) -> str:
-    """Build effective system prompt combining base prompt, custom prompt, and brevity."""
-    base = cfg.system_prompt.strip() if cfg.system_prompt.strip() else HAM_SYSTEM_PROMPT
-    custom = cfg.system_prompt_custom.strip()
-    brevity = f"\nKeep answers strictly between 1 and 2 sentences maximum." if cfg.agent_brevity_level == "strict" else ""
-    return f"{base.format(callsign=cfg.callsign)}\n{custom}\n{brevity}".strip()
+    """Build effective system prompt combining base prompt, custom prompt, language, and national regulations."""
+    if not cfg.system_prompt.strip():
+        base = generate_system_prompt(
+            callsign=cfg.callsign,
+            custom_instructions=cfg.system_prompt_custom,
+            language=cfg.language,
+            regulatory_jurisdiction=cfg.regulatory_jurisdiction,
+        )
+    else:
+        base = cfg.system_prompt.strip().format(callsign=cfg.callsign)
+        if cfg.system_prompt_custom.strip():
+            base += f"\n{cfg.system_prompt_custom.strip()}"
+
+    brevity = "\nKeep answers strictly between 1 and 2 sentences maximum." if cfg.agent_brevity_level == "strict" else ""
+    return f"{base}\n{brevity}".strip()
 
 
 def create_stt_service(cfg: AppConfig, sample_rate: int = 16000) -> FrameProcessor:

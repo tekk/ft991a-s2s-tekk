@@ -85,3 +85,69 @@ def test_disk_manager_fifo_purge(temp_recordings_dir):
 
     # Restore config
     config_manager.save({"max_recordings_mb": orig_max})
+
+
+@pytest.mark.asyncio
+async def test_audio_recorder_presets_and_catalog(temp_recordings_dir):
+    """Verify audio presets, metadata persistence, listing, and deletion."""
+    recorder = AudioRecorder(directory=temp_recordings_dir)
+
+    duration = 0.2
+    sr = 24000
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    pcm_bytes = (0.3 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16).tobytes()
+
+    # Save RX recording with custom preset
+    rx_rec = await recorder.save_recording(
+        pcm_bytes=pcm_bytes,
+        sample_rate=sr,
+        channels=1,
+        prefix="rx",
+        custom_format="opus",
+        custom_preset="eco",
+        transcript="Calling CQ from Bratislava",
+    )
+    assert rx_rec is not None
+    assert rx_rec["preset"] == "eco"
+    assert rx_rec["type"] == "RX"
+    assert rx_rec["transcript"] == "Calling CQ from Bratislava"
+
+    # Save TX recording with high preset
+    tx_rec = await recorder.save_recording(
+        pcm_bytes=pcm_bytes,
+        sample_rate=sr,
+        channels=1,
+        prefix="tx",
+        custom_format="mp3",
+        custom_preset="high",
+        transcript="Roger OM, 73 from AI station",
+    )
+    assert tx_rec is not None
+    assert tx_rec["preset"] == "high"
+    assert tx_rec["type"] == "TX"
+
+    # List recordings - All
+    all_recs = recorder.list_recordings()
+    assert len(all_recs) >= 2
+
+    # Filter RX
+    rx_only = recorder.list_recordings(filter_type="RX")
+    assert len(rx_only) == 1
+    assert rx_only[0]["type"] == "RX"
+
+    # Filter TX
+    tx_only = recorder.list_recordings(filter_type="TX")
+    assert len(tx_only) == 1
+    assert tx_only[0]["type"] == "TX"
+
+    # Search transcript
+    found = recorder.list_recordings(search="Bratislava")
+    assert len(found) == 1
+    assert "Bratislava" in found[0]["transcript"]
+
+    # Delete recording
+    del_ok = recorder.delete_recording(rx_rec["filename"])
+    assert del_ok is True
+    recs_after_del = recorder.list_recordings()
+    assert not any(r["filename"] == rx_rec["filename"] for r in recs_after_del)
+

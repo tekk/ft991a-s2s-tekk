@@ -11,17 +11,36 @@ from typing import Dict, Any
 from backend.cat.base import BaseRadio
 from backend.cat.ft991a import raw_smeter_to_label, format_frequency
 
+from backend.config import config_manager
+
 logger = logging.getLogger("mock_radio")
 
+
+def get_band_for_frequency(hz: int) -> str:
+    mhz = hz / 1_000_000.0
+    if 144.0 <= mhz <= 148.0:
+        return "VHF"
+    elif 430.0 <= mhz <= 450.0:
+        return "UHF"
+    elif 50.0 <= mhz <= 54.0:
+        return "6M"
+    elif 1.8 <= mhz <= 30.0:
+        return "HF"
+    return "OTHER"
+
+
 class MockRadio(BaseRadio):
-    def __init__(self):
+    def __init__(self, frequency_hz: Optional[int] = None, mode: Optional[str] = None):
+        cfg = config_manager.get()
         self._connected = True
         self._ptt_active = False
-        self._frequency_hz = 14205000  # 14.205 MHz (20m Ham Band)
-        self._mode = "USB"
+        self._frequency_hz = frequency_hz if frequency_hz is not None else 14205000
+        self._mode = mode.upper() if mode is not None else "USB"
         self._power_watts = 100
         self._simulated_signal_until = 0.0
         self._simulated_signal_level = 145  # S7
+        self._repeater_offset_mhz = cfg.vhf_offset_mhz if get_band_for_frequency(self._frequency_hz) == "VHF" else cfg.uhf_offset_mhz
+        self._repeater_offset_enabled = cfg.repeater_offset_enabled
 
     def connect(self) -> bool:
         self._connected = True
@@ -47,6 +66,32 @@ class MockRadio(BaseRadio):
         logger.info(f"[MOCK RADIO] Transceiver PTT set to: {'TRANSMIT (ON)' if transmit else 'RECEIVE (OFF)'}")
         return True
 
+    def set_frequency(self, freq_hz: int) -> bool:
+        self._frequency_hz = int(freq_hz)
+        cfg = config_manager.get()
+        band = get_band_for_frequency(self._frequency_hz)
+        if band == "VHF":
+            self._repeater_offset_mhz = cfg.vhf_offset_mhz
+        elif band == "UHF":
+            self._repeater_offset_mhz = cfg.uhf_offset_mhz
+        logger.info(f"[MOCK RADIO] Frequency set to {freq_hz} Hz ({format_frequency(freq_hz)}), band: {band}")
+        return True
+
+    def set_mode(self, mode: str) -> bool:
+        self._mode = mode.upper()
+        logger.info(f"[MOCK RADIO] Mode set to {self._mode}")
+        return True
+
+    def set_repeater_offset(self, offset_mhz: float, enabled: bool):
+        self._repeater_offset_mhz = float(offset_mhz)
+        self._repeater_offset_enabled = bool(enabled)
+        logger.info(f"[MOCK RADIO] Repeater offset: {offset_mhz} MHz (enabled: {enabled})")
+
+    def get_tx_frequency(self) -> int:
+        if self._repeater_offset_enabled:
+            return max(100000, self._frequency_hz + int(self._repeater_offset_mhz * 1_000_000))
+        return self._frequency_hz
+
     def poll_telemetry(self) -> Dict[str, Any]:
         now = time.time()
         if now < self._simulated_signal_until:
@@ -56,11 +101,19 @@ class MockRadio(BaseRadio):
             # Background band noise (S1-S2: ~20-35)
             s_val = random.randint(22, 34)
 
+        band = get_band_for_frequency(self._frequency_hz)
+        tx_freq = self.get_tx_frequency()
+
         return {
             "s_meter": s_val,
             "s_meter_level": raw_smeter_to_label(s_val),
             "frequency_hz": self._frequency_hz,
             "frequency_formatted": format_frequency(self._frequency_hz),
+            "tx_frequency_hz": tx_freq,
+            "tx_frequency_formatted": format_frequency(tx_freq),
+            "repeater_offset_mhz": self._repeater_offset_mhz,
+            "repeater_offset_enabled": self._repeater_offset_enabled,
+            "band": band,
             "mode": self._mode,
             "power_watts": self._power_watts,
             "ptt_active": self._ptt_active,
@@ -72,8 +125,13 @@ class MockRadio(BaseRadio):
         if cmd_clean.startswith("ID"):
             return "ID0670;"  # FT-991A ID
         elif cmd_clean.startswith("FA"):
+            if len(cmd_clean) >= 11 and cmd_clean[2:11].isdigit():
+                self._frequency_hz = int(cmd_clean[2:11])
             return f"FA{self._frequency_hz:09d};"
         elif cmd_clean.startswith("MD0"):
+            if len(cmd_clean) >= 4:
+                # Mode code
+                pass
             return "MD02;"  # USB
         elif cmd_clean.startswith("PC"):
             return f"PC{self._power_watts:03d};"
@@ -84,3 +142,4 @@ class MockRadio(BaseRadio):
             self._ptt_active = False
             return "TX0;"
         return ";"
+

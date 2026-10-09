@@ -43,6 +43,27 @@ class BaseRadio(ABC):
         pass
 
     @abstractmethod
+    def set_frequency(self, freq_hz: int) -> bool:
+        """Set radio VFO frequency in Hz."""
+        pass
+
+    @abstractmethod
+    def set_mode(self, mode: str) -> bool:
+        """Set radio operating mode (FM, USB, LSB, AM, C4FM, etc.)."""
+        pass
+
+    @abstractmethod
+    def set_repeater_offset(self, offset_mhz: float, enabled: bool):
+        """Configure repeater offset in MHz and enable/disable TX offset shift."""
+        pass
+
+    @abstractmethod
+    def get_tx_frequency(self) -> int:
+        """Return the calculated or active transmit frequency in Hz."""
+        pass
+
+    @abstractmethod
     def send_raw_command(self, cmd: str) -> str:
         """Send raw CAT command and return response."""
         pass
+

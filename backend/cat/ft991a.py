@@ -35,6 +35,10 @@ MODE_MAP = {
 }
 
 
+# Reverse mode mapping
+REVERSE_MODE_MAP = {v: k for k, v in MODE_MAP.items()}
+
+
 def raw_smeter_to_label(raw: int) -> str:
     """Convert raw 0-255 S-meter reading to standard amateur radio S-unit."""
     if raw < 15:
@@ -77,6 +81,7 @@ def format_frequency(hz: int) -> str:
 
 class FT991ARadio(BaseRadio):
     def __init__(self):
+        cfg = config_manager.get()
         self.serial_conn: Optional[serial.Serial] = None
         self.lock = threading.Lock()
         self.ptt_active = False
@@ -84,10 +89,29 @@ class FT991ARadio(BaseRadio):
 
         # Cached telemetry
         self.current_smeter_raw = 0
-        self.current_freq_hz = 14200000
-        self.current_mode = "USB"
+        self.current_freq_hz = cfg.current_frequency_hz if cfg.current_frequency_hz else 14200000
+        self.current_mode = cfg.current_mode if cfg.current_mode else "USB"
         self.current_power_watts = 50
         self.last_poll_time = 0.0
+
+        # Repeater Offset Configuration
+        band = self._get_band(self.current_freq_hz)
+        self.repeater_offset_mhz = cfg.vhf_offset_mhz if band == "VHF" else cfg.uhf_offset_mhz
+        self.repeater_offset_enabled = cfg.repeater_offset_enabled
+
+    @staticmethod
+    def _get_band(hz: int) -> str:
+        mhz = hz / 1_000_000.0
+        if 144.0 <= mhz <= 148.0:
+            return "VHF"
+        elif 430.0 <= mhz <= 450.0:
+            return "UHF"
+        elif 50.0 <= mhz <= 54.0:
+            return "6M"
+        elif 1.8 <= mhz <= 30.0:
+            return "HF"
+        return "OTHER"
+
 
     @staticmethod
     def list_serial_ports() -> List[Dict[str, str]]:
@@ -221,12 +245,53 @@ class FT991ARadio(BaseRadio):
         with self.lock:
             return self._set_ptt_locked(transmit)
 
+    def set_frequency(self, freq_hz: int) -> bool:
+        with self.lock:
+            self.current_freq_hz = int(freq_hz)
+            cfg = config_manager.get()
+            band = self._get_band(self.current_freq_hz)
+            if band == "VHF":
+                self.repeater_offset_mhz = cfg.vhf_offset_mhz
+            elif band == "UHF":
+                self.repeater_offset_mhz = cfg.uhf_offset_mhz
+            cmd = f"FA{self.current_freq_hz:09d};"
+            resp = self._send_command_locked(cmd)
+            logger.info(f"FT-991A Frequency set to {freq_hz} Hz ({format_frequency(freq_hz)}), band: {band}")
+            return bool(resp or (self.serial_conn and self.serial_conn.is_open))
+
+    def set_mode(self, mode: str) -> bool:
+        with self.lock:
+            mode_upper = mode.upper()
+            self.current_mode = mode_upper
+            code = REVERSE_MODE_MAP.get(mode_upper, "2")
+            resp = self._send_command_locked(f"MD0{code};")
+            logger.info(f"FT-991A Mode set to {mode_upper} (code {code})")
+            return bool(resp or (self.serial_conn and self.serial_conn.is_open))
+
+    def set_repeater_offset(self, offset_mhz: float, enabled: bool):
+        with self.lock:
+            self.repeater_offset_mhz = float(offset_mhz)
+            self.repeater_offset_enabled = bool(enabled)
+            logger.info(f"FT-991A Repeater offset configured: {offset_mhz} MHz (enabled: {enabled})")
+
+    def get_tx_frequency(self) -> int:
+        if self.repeater_offset_enabled:
+            return max(100000, self.current_freq_hz + int(self.repeater_offset_mhz * 1_000_000))
+        return self.current_freq_hz
+
     def _set_ptt_locked(self, transmit: bool) -> bool:
         cfg = config_manager.get()
         mode = cfg.ptt_mode.upper()
 
         if transmit:
             logger.info(f"Keying Transceiver PTT ON ({mode})...")
+            # If repeater offset is enabled, shift VFO to transmit frequency before keying
+            if self.repeater_offset_enabled:
+                tx_freq = self.get_tx_frequency()
+                if tx_freq != self.current_freq_hz:
+                    logger.info(f"Repeater shift active: Setting TX frequency to {format_frequency(tx_freq)}")
+                    self._send_command_locked(f"FA{tx_freq:09d};")
+
             if mode == "DATA_CAT":
                 cmd = "TX2;"
             elif mode == "RTS" and self.serial_conn:
@@ -253,6 +318,12 @@ class FT991ARadio(BaseRadio):
 
             # Always send TX0; to ensure CAT transmitter is unkeyed
             self._send_command_locked("TX0;")
+
+            # If repeater offset was active, restore RX frequency
+            if self.repeater_offset_enabled:
+                logger.info(f"Repeater shift release: Restoring RX frequency to {format_frequency(self.current_freq_hz)}")
+                self._send_command_locked(f"FA{self.current_freq_hz:09d};")
+
             self.ptt_active = False
             self.tx_start_time = 0.0
             return True
@@ -288,7 +359,10 @@ class FT991ARadio(BaseRadio):
                 fa_resp = self._send_command_locked("FA;")
                 if fa_resp.startswith("FA") and len(fa_resp) >= 11:
                     try:
-                        self.current_freq_hz = int(fa_resp[2:11])
+                        polled_freq = int(fa_resp[2:11])
+                        # Only update if not transmitting with offset
+                        if not (self.ptt_active and self.repeater_offset_enabled):
+                            self.current_freq_hz = polled_freq
                     except ValueError:
                         pass
 
@@ -306,13 +380,22 @@ class FT991ARadio(BaseRadio):
                     except ValueError:
                         pass
 
+        band = self._get_band(self.current_freq_hz)
+        tx_freq = self.get_tx_frequency()
+
         return {
             "s_meter": self.current_smeter_raw,
             "s_meter_level": raw_smeter_to_label(self.current_smeter_raw),
             "frequency_hz": self.current_freq_hz,
             "frequency_formatted": format_frequency(self.current_freq_hz),
+            "tx_frequency_hz": tx_freq,
+            "tx_frequency_formatted": format_frequency(tx_freq),
+            "repeater_offset_mhz": self.repeater_offset_mhz,
+            "repeater_offset_enabled": self.repeater_offset_enabled,
+            "band": band,
             "mode": self.current_mode,
             "power_watts": self.current_power_watts,
             "ptt_active": self.ptt_active,
             "connected": self.is_connected(),
         }
+

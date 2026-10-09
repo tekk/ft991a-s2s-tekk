@@ -5,6 +5,11 @@ export interface RadioTelemetry {
   s_meter_level: string;
   frequency_hz: number;
   frequency_formatted: string;
+  tx_frequency_hz?: number;
+  tx_frequency_formatted?: string;
+  repeater_offset_mhz?: number;
+  repeater_offset_enabled?: boolean;
+  band?: string;
   mode: string;
   power_watts: number;
   ptt_active: boolean;
@@ -48,6 +53,11 @@ const DEFAULT_TELEMETRY: TelemetryPayload = {
     s_meter_level: 'S0',
     frequency_hz: 14205000,
     frequency_formatted: '14.20500 MHz',
+    tx_frequency_hz: 14205000,
+    tx_frequency_formatted: '14.20500 MHz',
+    repeater_offset_mhz: -0.6,
+    repeater_offset_enabled: false,
+    band: 'HF',
     mode: 'USB',
     power_watts: 50,
     ptt_active: false,
@@ -150,11 +160,28 @@ export function useRadioSocket() {
     sendCommand({ action: 'set_threshold', threshold });
   };
 
+  const setFrequency = (
+    freqHz: number,
+    mode?: string,
+    repeaterOffsetEnabled?: boolean,
+    offsetMhz?: number
+  ) => {
+    sendCommand({
+      action: 'set_frequency',
+      frequency_hz: freqHz,
+      mode,
+      repeater_offset_enabled: repeaterOffsetEnabled,
+      offset_mhz: offsetMhz,
+    });
+  };
+
   return {
     telemetry,
     isWsConnected,
     sendPtt,
     simulateRx,
     setThreshold,
+    setFrequency,
   };
 }
+
